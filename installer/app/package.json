@@ -1,0 +1,9 @@
+{
+  "name": "studenthero",
+  "version": "1.0.0",
+  "private": true,
+  "main": "main.js",
+  "description": "StudentHero desktop app bootstrapper",
+  "author": "StudentHero",
+  "homepage": "https://github.com/sardor1411/students-hero"
+}

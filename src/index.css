@@ -1,0 +1,192 @@
+@import 'tailwindcss';
+
+/**
+ * Design tokens.
+ *
+ * A restrained dark palette built from layered charcoal surfaces (never pure
+ * black) with a single blue-violet accent. Exposed as Tailwind v4 theme
+ * variables so they can be used as `bg-surface`, `text-muted`, etc.
+ */
+@theme {
+  /* Layered backgrounds, darkest to lightest */
+  --color-base: #0b0c0f;
+  --color-surface: #121419;
+  --color-surface-2: #171a21;
+  --color-surface-3: #1e222b;
+
+  /* Hairline borders */
+  --color-line: #23272f;
+  --color-line-strong: #2e333d;
+
+  /* Text */
+  --color-ink: #eceef2;
+  --color-ink-dim: #a1a7b3;
+  --color-muted: #6f7681;
+
+  /* Accent + semantic, kept desaturated so nothing shouts */
+  --color-accent: #5b6cff;
+  --color-accent-soft: #6f7dff;
+  --color-ok: #3fb984;
+  --color-warn: #d9a441;
+  --color-danger: #e06a6a;
+
+  --font-sans:
+    'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui,
+    sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
+
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    /* A very soft top glow so the page is not a flat slab. */
+    background-image: radial-gradient(
+      70rem 40rem at 50% -18rem,
+      rgba(91, 108, 255, 0.07),
+      transparent 70%
+    );
+    background-attachment: fixed;
+  }
+
+  /* Tabular figures keep countdowns from jittering as digits change. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Consistent, visible focus for keyboard users on every interactive element. */
+  :where(button, a, input, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-accent-soft);
+    outline-offset: 2px;
+    border-radius: 8px;
+  }
+
+  ::selection {
+    background: rgba(91, 108, 255, 0.35);
+  }
+
+  /* Slim scrollbars that match the surfaces. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+}
+
+@layer utilities {
+  /* Subtle glass surface: translucent fill + hairline + inner highlight. */
+  .glass {
+    background-color: color-mix(in srgb, var(--color-surface) 82%, transparent);
+    backdrop-filter: blur(12px) saturate(140%);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  .card-hover {
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      transform 140ms ease;
+  }
+  .card-hover:hover {
+    background-color: var(--color-surface-2);
+    border-color: var(--color-line-strong);
+  }
+
+  /* Entrance animations - short and understated. */
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  @keyframes pulse-soft {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .anim-fade {
+    animation: fade-in 160ms ease-out both;
+  }
+  .anim-pop {
+    animation: pop-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .anim-slide {
+    animation: slide-up 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+  .anim-pulse {
+    animation: pulse-soft 1.8s ease-in-out infinite;
+  }
+  .anim-spin {
+    animation: spin 700ms linear infinite;
+  }
+
+  /* Respect users who prefer reduced motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .anim-fade,
+    .anim-pop,
+    .anim-slide,
+    .anim-pulse,
+    .anim-spin {
+      animation: none !important;
+    }
+    .card-hover {
+      transition: none;
+    }
+  }
+}

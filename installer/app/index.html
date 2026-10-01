@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'unsafe-inline';" />
+    <title>StudentHero</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --muted: #94a3b8;
+        --primary: #38bdf8;
+        --text: #e2e8f0;
+        --error: #f87171;
+        --success: #34d399;
+      }
+
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(180deg, #0f172a, #111827);
+        color: var(--text);
+        font-family: Segoe UI, system-ui, sans-serif;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .window {
+        width: 420px;
+        padding: 22px 22px 18px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 16px;
+        background: rgba(15, 23, 42, 0.9);
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.6);
+      }
+
+      .title {
+        margin: 0 0 14px;
+        font-size: 22px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+
+      .status {
+        font-size: 14px;
+        color: var(--muted);
+        min-height: 22px;
+        margin-bottom: 12px;
+      }
+
+      .progress {
+        width: 100%;
+        height: 10px;
+        background: rgba(148, 163, 184, 0.18);
+        border-radius: 999px;
+        overflow: hidden;
+        margin-bottom: 14px;
+      }
+
+      .progress-bar {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, var(--primary), #60a5fa);
+        border-radius: inherit;
+        transition: width 0.2s ease;
+      }
+
+      .detail {
+        font-size: 12px;
+        color: var(--muted);
+        min-height: 18px;
+        margin-bottom: 12px;
+      }
+
+      .error {
+        display: none;
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        color: #fecaca;
+        background: rgba(239, 68, 68, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        font-size: 12px;
+      }
+
+      .retry {
+        display: none;
+        margin-top: 12px;
+        border: none;
+        border-radius: 10px;
+        background: #2563eb;
+        color: white;
+        padding: 10px 16px;
+        font: inherit;
+        cursor: pointer;
+      }
+
+      .retry:hover { filter: brightness(1.08); }
+    </style>
+  </head>
+  <body>
+    <div class="window">
+      <h1 class="title">StudentHero</h1>
+      <div class="status" id="status-text">Preparing...</div>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="detail" id="detail-text">Starting installation</div>
+      <div class="error" id="error-box"></div>
+      <button class="retry" id="retry-button" type="button">Retry</button>
+    </div>
+
+    <script>
+      const statusText = document.getElementById('status-text');
+      const progressBar = document.getElementById('progress-bar');
+      const detailText = document.getElementById('detail-text');
+      const errorBox = document.getElementById('error-box');
+      const retryButton = document.getElementById('retry-button');
+
+      window.addEventListener('DOMContentLoaded', () => {
+        window.electronAPI.onStatus((payload) => {
+          statusText.textContent = payload.statusText || 'Preparing...';
+          progressBar.style.width = `${Math.max(0, Math.min(100, Number(payload.percent) || 0))}%`;
+          detailText.textContent = payload.detail || '';
+          if (payload.statusText === 'Starting...') {
+            detailText.textContent = payload.detail || 'Launching the app';
+          }
+        });
+
+        window.electronAPI.onError((payload) => {
+          errorBox.textContent = payload.message || 'Installation failed.';
+          errorBox.style.display = 'block';
+          retryButton.style.display = 'inline-block';
+        });
+
+        retryButton.addEventListener('click', () => {
+          errorBox.style.display = 'none';
+          retryButton.style.display = 'none';
+          window.electronAPI.retry();
+        });
+      });
+    </script>
+  </body>
+</html>

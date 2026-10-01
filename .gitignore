@@ -1,0 +1,62 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-server
+dist-ssr
+win-unpacked/
+release/
+build/
+out/
+installer/staging/
+installer/output/
+**/bin/
+**/obj/
+.ourent/
+screen/
+*.local
+*.exe
+*.exe.blockmap
+*.blockmap
+*.msi
+*.dmg
+*.zip
+*.nsis.7z
+*.asar
+builder-debug.yml
+builder-effective-config.yaml
+latest.yml
+tmp-*.ico
+installer/assets/StudentHero.ico
+installer/assets/studenthero.ico
+installer/iscc-output.txt
+/10
+/-2000
+
+# ELMS credentials - MUST never be committed.
+# (`*.local` above already covers .env.local; listed explicitly so it is
+#  obvious to anyone reading this file.)
+.env.local
+.env.*.local
+elms-credentials.dat
+
+# Local sync data store (contains ELMS tokens)
+data/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

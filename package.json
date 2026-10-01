@@ -1,0 +1,51 @@
+{
+  "name": "studenthero",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "A local-first Windows app for class schedules, ELMS sync, and Zoom automation.",
+  "homepage": "https://github.com/sardor1411/students-hero",
+  "license": "MIT",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && npm run build:server",
+    "build:server": "tsc -p tsconfig.server.json && node scripts/build-server.mjs",
+    "build:installer": "node scripts/build-installer.mjs",
+    "prepare:icons": "node scripts/prepare-icons.mjs",
+    "build:setup": "npm run prepare:icons && node installer/build-setup.mjs",
+    "package:release": "npm run build:setup && node scripts/package-release.mjs",
+    "sign:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-installer.ps1",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "worker": "npm run build:server && node dist-server/worker.js",
+    "sleep:mode": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sleep-mode.ps1",
+    "elms:sync": "npm run build:server && node dist-server/elms-sync.js --force",
+    "elms:status": "node dist-server/elms-sync.js --status",
+    "zoom:install-tasks": "npm run build:server && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-zoom-scheduler-tasks.ps1",
+    "zoom:remove-tasks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/remove-zoom-scheduler-tasks.ps1",
+    "elms:save-credentials": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/save-credentials.ps1",
+    "elms:install-task": "npm run build:server && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-elms-task.ps1",
+    "elms:uninstall-task": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-elms-task.ps1"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@vitejs/plugin-react": "^6.1.1",
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.81.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  }
+}
