@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/sardor1411/students-hero/actions/workflows/ci.yml"><img alt="Build" src="https://github.com/sardor1411/students-hero/actions/workflows/ci.yml/badge.svg?branch=main" /></a>
   <a href="https://github.com/sardor1411/students-hero/releases"><img alt="Releases" src="https://img.shields.io/badge/releases-GitHub-238636?logo=github" /></a>
-  <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0078D4?logo=windows&logoColor=white" />
+  <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0078D4?logo=windows&logoColor=white" /> 
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-3DA639.svg" /></a>
 </p>
 
@@ -56,11 +56,15 @@ StudentHero captures screenshots from real Zoom sessions for local review. Those
 2. Run the installer. It installs the packaged Electron app and its private Node.js runtime; no developer tools are required.
 3. Configure worker credentials locally to enable scheduled ELMS sync; see [Windows setup](SETUP.md). The dashboard also supports a separate manual ELMS import.
 
+<<<<<<< HEAD
 The installer and ZIP are for Windows x64. Both include the Electron app, built dashboard and worker, and a portable Node.js 20.19 runtime. StudentHero starts its worker locally and does not download project source or run the installer again at app startup. ELMS sync requires internet access.
+=======
+The installer is for Windows x64 and needs internet access for initial setup and release checks. It maintains a portable Node.js runtime for the local app. The bootstrapper checks the latest published GitHub Release when updates are available.
+>>>>>>> 8c67038612c89866656d6f4b902f61d51d91bae4
 
 ### Run from source
 
-**Requirements:** Windows x64 for scheduled Zoom/wake automation; Node.js `^20.19.0` or `>=22.12.0`; Python with Pillow for generating the installer icon.
+**Requirements:** Windows x64 for scheduled Zoom/wake automation and Node.js supported by the project.
 
 ```powershell
 git clone https://github.com/sardor1411/students-hero.git
@@ -76,7 +80,7 @@ npm run dev
 npm run worker
 ```
 
-For local development, the UI is at `http://localhost:5173` and the worker API binds to `127.0.0.1:8787`. The worker is optional for manual schedule editing, but ELMS sync and the local dashboard diagnostics need it. Windows scheduled tasks are installed/reconciled by the worker and can run independently of the dashboard. See [SETUP.md](SETUP.md) for credential storage, task behavior, and Windows wake limitations.
+For local development, the UI is at `http://localhost:5173` and the worker API binds to `127.0.0.1:8787`. Windows scheduled tasks are installed/reconciled by the worker and can run independently of the dashboard. See [SETUP.md](SETUP.md) for credential storage, task behavior, and Windows wake limitations.
 
 ## How it works
 
@@ -96,27 +100,39 @@ The worker syncs ELMS data and reconciles per-occurrence Windows tasks. The dash
 
 ## Releases
 
-Published releases are built on Windows by [the release workflow](.github/workflows/release.yml). Each release contains:
+Published releases contain the Windows installer and self-contained x64 application payload.
 
+<<<<<<< HEAD
 - `StudentHero-Setup.exe` — the Windows installer
 - `StudentHero-Windows-x64.zip` — the unpacked x64 Electron application
 - `checksums.txt` — SHA-256 hashes for both downloads
+=======
+- `StudentHero-Setup.exe` — Windows installer
+- `StudentHero-Windows-x64.zip` — packaged Windows x64 application
+- `checksums.txt` — SHA-256 hashes for release downloads
+>>>>>>> 8c67038612c89866656d6f4b902f61d51d91bae4
 
-To build the same artifacts locally on Windows:
+Release binaries are kept in GitHub Releases rather than committed to the source repository.
+
+To build release artifacts locally on Windows, use:
 
 ```powershell
 npm ci
 npm run package:release
 ```
 
+<<<<<<< HEAD
 The files are written to `release/artifacts/` by default, which is Git-ignored. Set `STUDENTHERO_RELEASE_DIR` to choose a different output directory. Do not commit installers, archives, screenshots captured by the app, or build output.
+=======
+The generated release output is Git-ignored.
+>>>>>>> 8c67038612c89866656d6f4b902f61d51d91bae4
 
 ## Troubleshooting
 
 <details>
 <summary><strong>ELMS sync fails</strong></summary>
 
-Check `.env.local` or the saved Windows credential, confirm the ELMS account can sign in, and review the local worker logs. Never paste credentials into an issue.
+Check the saved local credential, confirm the ELMS account can sign in, and review the local worker logs. Never paste credentials into an issue.
 </details>
 
 <details>
@@ -134,7 +150,7 @@ Keep the computer available at the scheduled time and check the dashboard's laun
 <details>
 <summary><strong>Where are logs and screenshots?</strong></summary>
 
-The installed app logs to `%LOCALAPPDATA%\StudentsHero\logs`. In a source checkout, worker data and screenshots are stored locally under `data/` and `screen/`.
+The installed app logs to `%LOCALAPPDATA%\StudentsHero\logs`. Source-checkout worker data and screenshots are stored locally under `data/` and `screen/`.
 </details>
 
 ## Security and privacy
