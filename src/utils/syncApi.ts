@@ -9,11 +9,16 @@
 import type { SyncStateResponse, ZoomTaskDiagnostics } from '../types/sync'
 
 /** The worker is a separate local service from the Vite frontend. */
-export const WORKER_BASE_URL = 'http://127.0.0.1:8787'
+const packagedWorkerPort = new URLSearchParams(window.location.search).get('workerPort')
+const workerPort = packagedWorkerPort && /^\d+$/.test(packagedWorkerPort)
+  ? Number(packagedWorkerPort)
+  : 8787
+export const WORKER_BASE_URL = `http://127.0.0.1:${workerPort}`
 /** Keep this short: a missing worker must not stall the UI. */
 const TIMEOUT_MS = 8000
 const HEALTH_TIMEOUT_MS = 2500
 const SYNC_TIMEOUT_MS = 30_000
+const CLEAR_DATA_TIMEOUT_MS = 180_000
 
 export class WorkerUnavailableError extends Error {
   constructor() {
@@ -102,6 +107,10 @@ export function setAutoSync(
   )
 }
 
+export function clearAllUserData(): Promise<{ ok: boolean; removedTasks: number }> {
+  return request('/api/clear-all-user-data', { method: 'POST' }, CLEAR_DATA_TIMEOUT_MS)
+}
+
 export function setWakeOffset(
   wakeOffsetMinutes: number,
 ): Promise<{ ok: boolean; partial?: boolean; message?: string; state: SyncStateResponse }> {
@@ -121,10 +130,10 @@ export function setScreenshotDelay(
 }
 
 /** Push locally edited schedules back so the worker reconciles against them. */
-export function pushSchedules(schedules: unknown[]): Promise<{ ok: boolean }> {
+export function pushSchedules(schedules: unknown[], accountId?: string | null): Promise<{ ok: boolean }> {
   return request('/api/schedules', {
     method: 'POST',
-    body: JSON.stringify({ schedules }),
+    body: JSON.stringify({ schedules, accountId: accountId ?? undefined }),
   })
 }
 

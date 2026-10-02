@@ -3,14 +3,20 @@ param(
     [Parameter(Mandatory = $true)] [string]$OccurrenceKey,
     [string]$Name = 'Zoom lesson',
     [int]$DelayMinutes = 10,
-    [string]$CaptureAt
+    [string]$CaptureAt,
+    [string]$DataRoot
 )
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$dataDir = Join-Path $root 'data'
-$screenRoot = Join-Path $root 'screen'
+$dataRoot = if ($DataRoot) { $DataRoot } else { $root }
+$resetMarker = Join-Path $dataRoot 'logout.lock'
+if (Test-Path -LiteralPath $resetMarker) {
+    exit 0
+}
+$dataDir = Join-Path $dataRoot 'data'
+$screenRoot = Join-Path $dataRoot 'screen'
 $occurrencePath = Join-Path $dataDir 'zoom-occurrences.json'
 
 if (-not (Test-Path $dataDir)) {

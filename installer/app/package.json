@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "main": "main.js",
-  "description": "StudentHero desktop app bootstrapper",
+  "description": "StudentHero Windows desktop application",
   "author": "StudentHero",
   "homepage": "https://github.com/sardor1411/students-hero"
 }

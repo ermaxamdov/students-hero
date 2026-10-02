@@ -40,6 +40,7 @@ function parseSchedule(raw: unknown): Schedule | null {
 
   return {
     id: candidate.id,
+    accountId: typeof candidate.accountId === 'string' ? candidate.accountId : undefined,
     name: typeof candidate.name === 'string' ? candidate.name : '',
     url: candidate.url,
     time: candidate.time,
@@ -82,6 +83,12 @@ export function saveSchedules(schedules: Schedule[]): void {
     // Storage can be full or blocked (private mode). Scheduling still works
     // for the current session, so there is nothing useful to do here.
   }
+}
+
+/** Remove every renderer-owned persistence key for the current app origin. */
+export function clearLocalAppStorage(): void {
+  try { window.localStorage.clear() } catch { /* ignore */ }
+  try { window.sessionStorage.clear() } catch { /* ignore */ }
 }
 
 export function hasSeenPopupNotice(): boolean {

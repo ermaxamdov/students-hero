@@ -60,6 +60,8 @@ export interface SyncStore {
   /** Minutes after a lesson start when the automatic screenshot is taken. */
   screenshotDelayMinutes: number
   schedules: Schedule[]
+  /** Account owner of this worker store; absent only for legacy empty state. */
+  accountId?: string
   lastSync: SyncStatus
   /** ELMS tokens, so routine syncs skip the password login. */
   tokens?: {

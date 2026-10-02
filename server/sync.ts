@@ -4,9 +4,9 @@
  * "Sync Now" button, so all three behave identically.
  */
 
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, existsSync } from 'node:fs'
 import type { SyncStatus, SyncStore } from '../src/types/sync'
-import { hasCredentials, LOG_PATH, type WorkerConfig } from './config'
+import { hasCredentials, LOG_PATH, RESET_MARKER, type WorkerConfig } from './config'
 import {
   ElmsAuthFailure,
   fetchSemesterId,
@@ -17,6 +17,7 @@ import {
   type ElmsTokens,
 } from './elmsCore'
 import { ensureDataDir, loadStore, saveStore } from './store'
+import { createEmptyStore } from '../src/types/sync'
 import { reconcileZoomLaunchTasks } from './zoomTasks'
 
 /** Append a line to the worker log. Never contains credentials. */
@@ -36,21 +37,34 @@ export interface SyncOutcome {
   store: SyncStore
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('ELMS sync cancelled during account logout.')
+}
+
+function resetIsActive(): boolean {
+  return existsSync(RESET_MARKER())
+}
+
 /**
  * Run one full sync and persist the result.
  *
  * On failure nothing is deleted: existing schedules and their Zoom links are
  * left exactly as they were, and only the status is updated.
  */
-export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
-  const store = loadStore(config.syncTime)
+export async function runSync(config: WorkerConfig, signal?: AbortSignal): Promise<SyncOutcome> {
+  if (resetIsActive()) return { status: { state: 'never' }, store: loadStore(config.syncTime) }
+  throwIfAborted(signal)
+  const loadedStore = loadStore(config.syncTime)
+  const store = config.accountId && loadedStore.accountId !== config.accountId
+    ? createEmptyStore(config.syncTime)
+    : loadedStore
 
   if (!hasCredentials(config)) {
     const status: SyncStatus = {
       state: 'error',
       at: new Date().toISOString(),
       message:
-        'ELMS credentials are not configured. Set ELMS_USERNAME and ELMS_PASSWORD in .env.local (or run npm run elms:save-credentials).',
+        'ELMS account is not connected. Configure local app credentials before enabling background sync.',
     }
     const next = { ...store, lastSync: status }
     saveStore(next)
@@ -66,7 +80,7 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
     // there is nothing usable cached.
     if (!tokens?.accessToken) {
       log('[ELMS SYNC] authenticating with ELMS')
-      tokens = await login(config.username, config.password)
+      tokens = await login(config.username, config.password, signal)
     }
 
     const ctx: AuthContext = {
@@ -75,17 +89,17 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
         ctx.tokens = updated
       },
       // Called when the refresh token is also dead.
-      relogin: async () => {
+      relogin: async (requestSignal?: AbortSignal) => {
         log('refresh failed - re-login with saved credentials')
-        return login(config.username, config.password)
+        return login(config.username, config.password, requestSignal)
       },
     }
 
-    const semesterId = ctx.tokens.semesterId ?? (await fetchSemesterId(ctx))
+    const semesterId = ctx.tokens.semesterId ?? (await fetchSemesterId(ctx, signal))
     if (!semesterId) throw new Error('Could not determine the active semester from ELMS profile.')
     log('[ELMS SYNC] auth ✅')
 
-    const timetable = await fetchTimetable(ctx, semesterId)
+    const timetable = await fetchTimetable(ctx, semesterId, signal)
     log('[ELMS SYNC] timetable ✅')
     log('[ELMS SYNC] zoom links ✅')
     log(
@@ -93,7 +107,14 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
         `${timetable.lessons.length} lessons, ${timetable.withLinks.length} with links`,
     )
 
-    const { schedules, counts, changes } = reconcile(store.schedules, timetable.withLinks, now)
+    if (resetIsActive()) return { status: { state: 'never' }, store }
+    throwIfAborted(signal)
+    const { schedules, counts, changes } = reconcile(
+      store.schedules,
+      timetable.withLinks,
+      now,
+      config.accountId ?? undefined,
+    )
     counts.lessonsFound = timetable.lessons.length
     counts.zoomLinksFound = timetable.withLinks.length
     counts.withoutLink = timetable.lessons.length - timetable.withLinks.length
@@ -108,10 +129,13 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
 
     const next: SyncStore = {
       ...store,
+      accountId: config.accountId ?? undefined,
       schedules,
       lastSync: status,
       tokens: { ...ctx.tokens, semesterId },
     }
+    if (resetIsActive()) return { status: { state: 'never' }, store }
+    throwIfAborted(signal)
     saveStore(next)
     const taskReport = await reconcileZoomLaunchTasks(
       next.schedules,
@@ -119,6 +143,8 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
       next.wakeOffsetMinutes,
       next.screenshotDelayMinutes,
     )
+    if (resetIsActive()) return { status: { state: 'never' }, store }
+    throwIfAborted(signal)
     status.taskCounts = {
       created: taskReport.created,
       updated: taskReport.updated,
@@ -127,6 +153,7 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
     }
     status.partial = taskReport.failed > 0
     next.lastSync = status
+    if (resetIsActive()) return { status: { state: 'never' }, store }
     saveStore(next)
     if (taskReport.failed > 0) {
       log(`[ELMS SYNC] AutoZoom task reconciliation partial: ${taskReport.failed} failed`)
@@ -138,6 +165,9 @@ export async function runSync(config: WorkerConfig): Promise<SyncOutcome> {
     )
     return { status, store: next }
   } catch (error) {
+    if (signal?.aborted || resetIsActive()) {
+      return { status: { state: 'never' }, store }
+    }
     const message = error instanceof Error ? error.message : String(error)
     const status: SyncStatus = {
       state: 'error',

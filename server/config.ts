@@ -17,6 +17,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { accountIdForUsername } from '../src/utils/account'
 
 /** Project root, resolved from this file's location at runtime. */
 export function projectRoot(): string {
@@ -26,13 +27,16 @@ export function projectRoot(): string {
   return resolve(here, '..')
 }
 
-export const DATA_DIR = () => join(projectRoot(), 'data')
+export const DATA_ROOT = () => resolve(process.env.STUDENTHERO_DATA_ROOT || projectRoot())
+export const DATA_DIR = () => join(DATA_ROOT(), 'data')
 export const STORE_PATH = () => join(DATA_DIR(), 'sync-store.json')
 export const LOG_PATH = () => join(DATA_DIR(), 'elms-sync.log')
-export const CREDENTIALS_DAT = () => join(projectRoot(), 'elms-credentials.dat')
+export const CREDENTIALS_DAT = () => join(DATA_ROOT(), 'elms-credentials.dat')
+export const RESET_MARKER = () => join(DATA_ROOT(), 'logout.lock')
 
 export interface WorkerConfig {
   username: string
+  accountId: string | null
   password: string
   syncTime: string
   port: number
@@ -95,7 +99,7 @@ function readDpapiPassword(): string | null {
 }
 
 export function loadConfig(): WorkerConfig {
-  const env = { ...parseEnvFile(join(projectRoot(), '.env.local')), ...process.env }
+  const env = { ...parseEnvFile(join(DATA_ROOT(), '.env.local')), ...process.env }
 
   const username = (env.ELMS_USERNAME ?? '').trim()
   const syncTime = /^([01]\d|2[0-3]):[0-5]\d$/.test(env.ELMS_SYNC_TIME ?? '')
@@ -109,6 +113,7 @@ export function loadConfig(): WorkerConfig {
 
   return {
     username,
+    accountId: accountIdForUsername(username),
     password,
     syncTime,
     port,

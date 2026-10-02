@@ -16,7 +16,7 @@
     "build:installer": "node scripts/build-installer.mjs",
     "prepare:icons": "node scripts/prepare-icons.mjs",
     "build:setup": "npm run prepare:icons && node installer/build-setup.mjs",
-    "package:release": "npm run build:setup && node scripts/package-release.mjs",
+    "package:release": "npm run build && node scripts/prepare-release-runtime.mjs && npm run build:setup && node scripts/package-release.mjs",
     "sign:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-installer.ps1",
     "lint": "oxlint",
     "preview": "vite preview",

@@ -8,6 +8,7 @@
 import type { Schedule } from '../types/schedule'
 import type { ZoomTaskDiagnostics } from '../types/sync'
 import {
+  formatClock,
   formatRemaining,
   formatWhen,
   isZoom,
@@ -53,6 +54,16 @@ export function NextMeetingCard({
   const diagnostics = (
     <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2 border-t border-line pt-3 text-[12px]">
       <span className="col-span-2 font-medium text-ink">Next Automation</span>
+      <span className="text-muted">Next wake</span>
+      <span className="text-right text-ink">{formatClock(taskDiagnostics?.nextWake?.at)}</span>
+      <span className="text-muted">Next class</span>
+      <span className="text-right text-ink">{next ? next.schedule.time : 'None'}</span>
+      <span className="text-muted">Status</span>
+      <span className="text-right text-ink">
+        {taskDiagnostics?.nextWake
+          ? taskDiagnostics.nextWake.installed ? 'Wake task scheduled' : 'Wake task missing'
+          : 'No future wake task'}
+      </span>
       <span className="text-muted">Windows task query</span>
       <span className={`text-right ${taskDiagnostics?.queryStatus === 'error' ? 'text-warn' : 'text-ink'}`}>
         {taskReadiness}

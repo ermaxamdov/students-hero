@@ -19,6 +19,8 @@ interface ElmsCardProps {
   onSyncNow: () => void
   onToggleAutoSync: (enabled: boolean) => void
   onShowDetails: () => void
+  onConnect: () => void
+  accountConnected: boolean
 }
 
 function Stat({ value, label }: { value: string; label: string }) {
@@ -39,10 +41,12 @@ export function ElmsCard({
   onSyncNow,
   onToggleAutoSync,
   onShowDetails,
+  onConnect,
+  accountConnected,
 }: ElmsCardProps) {
   const last = state?.lastSync
   const counts = last?.counts
-  const failed = last?.state === 'error'
+  const failed = accountConnected && last?.state === 'error'
 
   /* Worker down: elegant warning, not a wall of red. */
   if (workerOffline) {
@@ -70,9 +74,10 @@ export function ElmsCard({
     )
   }
 
-  const connected = state?.credentialsConfigured ?? false
+  const connected = accountConnected
+  const backgroundConfigured = state?.credentialsConfigured ?? false
   const tone: StatusTone = failed ? 'danger' : connected ? 'ok' : 'warn'
-  const statusText = failed ? 'Sync failed' : connected ? 'Connected' : 'Not configured'
+  const statusText = failed ? 'Login failed' : connected ? 'Connected' : 'Account not connected'
 
   return (
     <Card className="p-5">
@@ -88,15 +93,15 @@ export function ElmsCard({
           <p className="mt-1 text-[13px] text-ink-dim">
             {connected
               ? 'Your timetable is synced automatically.'
-              : 'Add your credentials to .env.local to enable syncing.'}
+              : 'Connect your ELMS account to enable background syncing.'}
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
           <span className="text-[12.5px] text-muted">Auto-sync</span>
           <Toggle
-            checked={state?.autoSyncEnabled ?? false}
-            disabled={busy || !connected}
+            checked={(state?.autoSyncEnabled ?? false) && connected}
+            disabled={busy || !connected || !backgroundConfigured}
             onChange={onToggleAutoSync}
             label="Toggle ELMS auto-sync"
           />
@@ -113,19 +118,26 @@ export function ElmsCard({
       </div>
 
       {/* Compact error row instead of a giant red block. */}
+      {!connected && !failed && !error && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-[#4a3a20] bg-[#241f14]/60 px-3 py-2.5">
+          <p className="text-[12.5px] text-ink-dim">ELMS account not connected</p>
+          <Button size="sm" variant="secondary" onClick={onConnect}>Connect ELMS</Button>
+        </div>
+      )}
+
       {(failed || error) && (
         <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-[#4a2b2b] bg-[#241a1a]/60 px-3 py-2.5">
           <span className="mt-0.5 text-danger">
             <Icon name="warning" className="h-4 w-4" />
           </span>
           <div className="min-w-0 flex-1">
-            <p className="text-[13px] font-medium text-ink">ELMS sync failed</p>
+            <p className="text-[13px] font-medium text-ink">{failed ? 'ELMS login failed' : 'ELMS sync failed'}</p>
             <p className="mt-0.5 truncate text-[12.5px] text-ink-dim">
               {error ?? last?.message ?? 'Could not connect to ELMS.'}
             </p>
           </div>
           <div className="flex shrink-0 gap-1.5">
-            <Button size="sm" variant="secondary" onClick={onSyncNow} disabled={busy}>
+            <Button size="sm" variant="secondary" onClick={onSyncNow} disabled={busy || !connected || !backgroundConfigured}>
               Retry
             </Button>
             <Button size="sm" variant="ghost" onClick={onShowDetails}>
@@ -158,7 +170,7 @@ export function ElmsCard({
             icon="refresh"
             onClick={onSyncNow}
             loading={busy}
-            disabled={busy || !connected}
+            disabled={busy || !connected || !backgroundConfigured}
           >
             Sync now
           </Button>

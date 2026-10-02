@@ -10,7 +10,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Schedule, WeekdayIndex } from '../src/types/schedule'
-import { projectRoot } from './config'
+import { DATA_ROOT, projectRoot } from './config'
 import { loadStore } from './store'
 
 export const AUTO_ZOOM_LEGACY_TASK_PREFIX = 'AutoZoom_'
@@ -229,12 +229,12 @@ export function collectScreenshotTaskSpecs(
   })
 }
 
-function runPowerShell(command: string): Promise<string> {
+function runPowerShell(command: string, timeout = 30_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
-      { encoding: 'utf8', windowsHide: true, timeout: 30_000, maxBuffer: 5 * 1024 * 1024 },
+      { encoding: 'utf8', windowsHide: true, timeout, maxBuffer: 5 * 1024 * 1024 },
       (error, stdout) => {
         if (error) {
           const code = typeof error.code === 'number' ? error.code : 'unknown'
@@ -275,6 +275,8 @@ export function buildZoomLauncherArgument(task: ZoomTaskSpec, scriptPath: string
     String(DEFAULT_GRACE_MINUTES),
     '-BrowserGraceSeconds',
     String(BROWSER_GRACE_SECONDS),
+    '-DataRoot',
+    DATA_ROOT(),
   ]
   return parts.map((value) => quoteForCommandLine(value)).join(' ')
 }
@@ -296,6 +298,8 @@ export function buildScreenshotTaskArgument(task: ScreenshotTaskSpec, scriptPath
     String(task.delayMinutes),
     '-CaptureAt',
     task.startAt.toISOString(),
+    '-DataRoot',
+    DATA_ROOT(),
   ]
   return parts.map((value) => quoteForCommandLine(value)).join(' ')
 }
@@ -333,7 +337,7 @@ async function getExistingManagedTasks(): Promise<Map<string, ExistingTask>> {
     `$wakePrefix = ${quotePowerShellString(AUTO_ZOOM_WAKE_TASK_PREFIX)};`,
     `$screenshotPrefix = ${quotePowerShellString(AUTO_ZOOM_SCREENSHOT_TASK_PREFIX)};`,
     `$legacyPrefix = ${quotePowerShellString(AUTO_ZOOM_LEGACY_TASK_PREFIX)};`,
-    '$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName.StartsWith($launchPrefix) -or $_.TaskName.StartsWith($wakePrefix) -or $_.TaskName.StartsWith($screenshotPrefix) -or $_.TaskName.StartsWith($legacyPrefix) } | ForEach-Object {',
+    '$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName.StartsWith($launchPrefix) -or $_.TaskName.StartsWith($wakePrefix) -or $_.TaskName.StartsWith($screenshotPrefix) -or $_.TaskName.StartsWith($legacyPrefix) -or $_.TaskName -eq "AutoZoomScheduler-ElmsSync" } | ForEach-Object {',
     '  $action = if ($_.Actions.Count -gt 0) { $_.Actions[0] } else { $null };',
     '  $triggerAt = $null;',
     '  if ($_.Triggers.Count -gt 0 -and $_.Triggers[0].StartBoundary) { $triggerAt = ([DateTime]::Parse($_.Triggers[0].StartBoundary)).ToUniversalTime().ToString("o") };',
@@ -420,6 +424,11 @@ function ensureTask(
 
 let reconciliationQueue: Promise<void> = Promise.resolve()
 
+/** Wait until task reconciliation already requested by another API call ends. */
+export async function waitForTaskOperations(): Promise<void> {
+  await reconciliationQueue
+}
+
 export function reconcileZoomLaunchTasks(
   schedules: Schedule[],
   now: Date = new Date(),
@@ -430,6 +439,26 @@ export function reconcileZoomLaunchTasks(
     reconcileZoomTasksNow(schedules, now, wakeOffsetMinutes, screenshotDelayMinutes))
   reconciliationQueue = current.then(() => undefined, () => undefined)
   return current
+}
+
+/** Remove every Windows task owned by StudentHero, including legacy and screenshot tasks. */
+export async function removeAllManagedTasks(): Promise<{ removed: number; failed: number }> {
+  const command = [
+    '$ErrorActionPreference = "Stop";',
+    `$launchPrefix = ${quotePowerShellString(AUTO_ZOOM_LAUNCH_TASK_PREFIX)};`,
+    `$wakePrefix = ${quotePowerShellString(AUTO_ZOOM_WAKE_TASK_PREFIX)};`,
+    `$screenshotPrefix = ${quotePowerShellString(AUTO_ZOOM_SCREENSHOT_TASK_PREFIX)};`,
+    `$legacyPrefix = ${quotePowerShellString(AUTO_ZOOM_LEGACY_TASK_PREFIX)};`,
+    '$tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $_.TaskName.StartsWith($launchPrefix) -or $_.TaskName.StartsWith($wakePrefix) -or $_.TaskName.StartsWith($screenshotPrefix) -or $_.TaskName.StartsWith($legacyPrefix) -or $_.TaskName -eq "AutoZoomScheduler-ElmsSync" });',
+    '$removed = 0; $failed = 0;',
+    'foreach ($task in $tasks) { & schtasks.exe /Delete /TN ($task.TaskPath + $task.TaskName) /F *> $null; if ($LASTEXITCODE -eq 0) { $removed++ } else { $failed++ } }',
+    '[Console]::Out.Write((ConvertTo-Json -InputObject ([pscustomobject]@{ removed = $removed; failed = $failed }) -Compress));',
+  ].join(' ')
+  const result = JSON.parse(await runPowerShell(command, 180_000)) as { removed?: unknown; failed?: unknown }
+  return {
+    removed: typeof result.removed === 'number' ? result.removed : 0,
+    failed: typeof result.failed === 'number' ? result.failed : 0,
+  }
 }
 
 async function reconcileZoomTasksNow(
@@ -694,14 +723,9 @@ async function main(): Promise<void> {
   }
 
   if (args.has('--remove')) {
-    const existing = await getExistingManagedTasks()
-    const owned = [...existing.keys()].filter((name) =>
-      name.startsWith(AUTO_ZOOM_LAUNCH_TASK_PREFIX) ||
-      name.startsWith(AUTO_ZOOM_WAKE_TASK_PREFIX) ||
-      name.startsWith(AUTO_ZOOM_LEGACY_TASK_PREFIX))
-    const results = await Promise.allSettled(owned.map((taskName) => deleteTask(taskName)))
-    if (results.some((result) => result.status === 'rejected')) process.exitCode = 1
-    console.log(JSON.stringify({ removed: results.filter((result) => result.status === 'fulfilled').length }))
+    const result = await removeAllManagedTasks()
+    if (result.failed > 0) process.exitCode = 1
+    console.log(JSON.stringify(result))
     return
   }
 

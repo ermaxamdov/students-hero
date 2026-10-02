@@ -53,9 +53,6 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Build application
-        run: npm run build
-
       - name: Build release assets
         run: npm run package:release
 
@@ -65,8 +62,8 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           gh release upload "$env:RELEASE_TAG" `
-            release/StudentHero-Setup.exe `
-            release/StudentHero-Windows-x64.zip `
-            release/SHA256SUMS.txt `
+            release/artifacts/StudentHero-Setup.exe `
+            release/artifacts/StudentHero-Windows-x64.zip `
+            release/artifacts/checksums.txt `
             --repo "$env:GITHUB_REPOSITORY" `
             --clobber

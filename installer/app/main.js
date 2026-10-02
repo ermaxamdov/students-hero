@@ -1,5 +1,5 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
-const { execFileSync, spawn } = require('child_process');
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { execFile, execFileSync, spawn } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -20,6 +20,102 @@ let installerWindow = null;
 let appWindow = null;
 let activeProcesses = [];
 let retryHandler = null;
+let packagedStaticServer = null;
+let activeWorkerPort = DEFAULT_WORKER_PORT;
+
+function getAppDataRoot() {
+  return app.getPath('userData');
+}
+
+function getAppDataInfo() {
+  const root = getAppDataRoot();
+  const paths = {
+    appData: root,
+    logs: path.join(root, 'logs'),
+    screenshots: path.join(root, 'screen'),
+    localState: path.join(root, 'data', 'sync-store.json'),
+    credentials: path.join(root, 'elms-credentials.dat'),
+  };
+  return Object.fromEntries(Object.entries(paths).map(([key, value]) => [key, {
+    path: value,
+    exists: fs.existsSync(value),
+  }]));
+}
+
+function postWorkerJson(pathname) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: '127.0.0.1',
+      port: activeWorkerPort,
+      path: pathname,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': '2' },
+      timeout: 180_000,
+    }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => {
+        let parsed = {};
+        try { parsed = JSON.parse(body); } catch { /* handled below */ }
+        if (response.statusCode < 200 || response.statusCode >= 300 || parsed.ok !== true) {
+          reject(new Error(typeof parsed.message === 'string' ? parsed.message : 'Worker cleanup failed.'));
+          return;
+        }
+        resolve(parsed);
+      });
+    });
+    request.on('error', () => reject(new Error('The local StudentHero worker is unavailable.')));
+    request.on('timeout', () => request.destroy(new Error('The local StudentHero worker timed out.')));
+    request.end('{}');
+  });
+}
+
+function getHibernateHelperPath() {
+  const packaged = path.join(process.resourcesPath, 'studenthero', 'scripts', 'sleep-mode.ps1');
+  if (app.isPackaged && fs.existsSync(packaged)) return packaged;
+  return path.resolve(__dirname, '..', '..', 'scripts', 'sleep-mode.ps1');
+}
+
+ipcMain.handle('studenthero:get-app-data-info', () => getAppDataInfo());
+ipcMain.handle('studenthero:open-app-data-path', async (_event, key) => {
+  const info = getAppDataInfo();
+  if (!Object.prototype.hasOwnProperty.call(info, key)) throw new Error('Unknown app data path.');
+  const target = info[key].path;
+  ensureDir(target.endsWith('.json') || target.endsWith('.dat') ? path.dirname(target) : target);
+  const error = await shell.openPath(target.endsWith('.json') || target.endsWith('.dat') ? path.dirname(target) : target);
+  if (error) throw new Error(error);
+  return { ok: true };
+});
+ipcMain.handle('studenthero:clear-all-user-data', async () => {
+  const result = await postWorkerJson('/api/clear-all-user-data');
+  const credentialPath = path.join(getAppDataRoot(), 'elms-credentials.dat');
+  fs.rmSync(credentialPath, { force: true });
+  if (appWindow && !appWindow.isDestroyed()) {
+    await appWindow.webContents.session.clearStorageData({
+      storages: ['cookies', 'filesystem', 'indexdb', 'localstorage', 'shadercache', 'websql', 'serviceworkers', 'cachestorage'],
+    });
+  }
+  return { ok: true, removedTasks: Number(result.removedTasks) || 0 };
+});
+ipcMain.handle('studenthero:hibernate', async () => {
+  if (process.platform !== 'win32') throw new Error('Hibernate is only available on Windows.');
+  const helper = getHibernateHelperPath();
+  if (!fs.existsSync(helper)) throw new Error('The Windows Hibernate helper is missing.');
+  return await new Promise((resolve, reject) => {
+    execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', helper, '-NoConfirm'], {
+      windowsHide: true,
+      timeout: 30_000,
+    }, (error) => {
+      if (error) {
+        logLine('Hibernate helper failed to start or returned an error.');
+        reject(new Error('Windows Hibernate could not be started.'));
+        return;
+      }
+      resolve({ ok: true });
+    });
+  });
+});
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -157,6 +253,101 @@ async function waitForHttp(url, timeoutMs = 60_000) {
     }
   }
   throw new Error(`Timed out while waiting for ${url}`);
+}
+
+async function waitForWorkerHealth(url, timeoutMs = 90_000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const body = await new Promise((resolve, reject) => {
+        const request = http.get(url, (response) => {
+          const chunks = [];
+          response.on('data', (chunk) => chunks.push(chunk));
+          response.on('end', () => {
+            if (response.statusCode !== 200) {
+              reject(new Error(`Worker health returned HTTP ${response.statusCode}.`));
+              return;
+            }
+            try {
+              resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+            } catch (error) {
+              reject(new Error(`Worker health returned invalid JSON: ${error.message}`));
+            }
+          });
+        });
+        request.on('error', reject);
+        request.setTimeout(2500, () => request.destroy(new Error('Worker health timeout')));
+      });
+      if (body.ok === true && body.service === 'auto-zoom-worker') return;
+      throw new Error('Worker health check returned an unexpected response.');
+    } catch (error) {
+      if (Date.now() - start + 1000 >= timeoutMs) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  throw new Error(`Timed out while waiting for ${url}`);
+}
+
+function startStaticServer(root, port) {
+  const normalizedRoot = path.resolve(root);
+  const mimeTypes = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.webp': 'image/webp',
+  };
+
+  const server = http.createServer((request, response) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.writeHead(405).end();
+      return;
+    }
+
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(request.url || '/', 'http://127.0.0.1').pathname);
+    } catch {
+      response.writeHead(400).end();
+      return;
+    }
+
+    const relativePath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+    const filePath = path.resolve(normalizedRoot, relativePath);
+    if (filePath !== normalizedRoot && !filePath.startsWith(`${normalizedRoot}${path.sep}`)) {
+      response.writeHead(403).end();
+      return;
+    }
+
+    const targetPath = fs.existsSync(filePath) && fs.statSync(filePath).isFile()
+      ? filePath
+      : path.join(normalizedRoot, 'index.html');
+    if (!fs.existsSync(targetPath)) {
+      response.writeHead(404).end();
+      return;
+    }
+
+    response.writeHead(200, {
+      'Content-Type': mimeTypes[path.extname(targetPath).toLowerCase()] || 'application/octet-stream',
+      'X-Content-Type-Options': 'nosniff',
+    });
+    if (request.method === 'HEAD') {
+      response.end();
+      return;
+    }
+    fs.createReadStream(targetPath).pipe(response);
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve(server);
+    });
+  });
 }
 
 async function waitForLocalServer(url, timeoutMs = 90_000) {
@@ -500,6 +691,10 @@ function startBackgroundCommand(command, args, cwd, env = {}) {
   });
   activeProcesses.push(child);
 
+  child.on('error', (error) => {
+    logLine(`${command} failed to start: ${error.message}`);
+  });
+
   child.stdout.on('data', (chunk) => {
     const text = chunk.toString();
     logLine(`[${command}] ${text.trim()}`);
@@ -518,6 +713,7 @@ function startBackgroundCommand(command, args, cwd, env = {}) {
 
 async function startInstalledApp() {
   const workerPort = await findOpenPort(DEFAULT_WORKER_PORT, DEFAULT_WORKER_PORT + 10);
+  activeWorkerPort = workerPort;
   const localPort = await findOpenPort(DEFAULT_LOCAL_PORT, DEFAULT_LOCAL_PORT + 10);
   const nodeDir = getNodeBinDir();
   const nodeExecutable = path.join(nodeDir, 'node.exe');
@@ -525,6 +721,7 @@ async function startInstalledApp() {
   const extraEnv = {
     PATH: `${nodeDir};${process.env.PATH || ''}`,
     ELMS_API_PORT: String(workerPort),
+    STUDENTHERO_DATA_ROOT: getAppDataRoot(),
   };
 
   setStatus('Starting...', 80, `Worker on ${workerPort}, app on ${localPort}`);
@@ -566,6 +763,69 @@ async function startInstalledApp() {
 
   setStatus('Starting...', 100, 'Ready');
   logLine(`StudentsHero is running on http://127.0.0.1:${localPort}`);
+}
+
+async function startPackagedApp() {
+  const packagedRoot = path.join(process.resourcesPath, 'studenthero');
+  const nodeExecutable = path.join(packagedRoot, 'runtime', 'node.exe');
+  const workerPath = path.join(packagedRoot, 'dist-server', 'worker.js');
+  const uiPath = path.join(packagedRoot, 'dist');
+  const iconPath = path.join(process.resourcesPath, 'assets', 'StudentHero.ico');
+
+  for (const requiredPath of [nodeExecutable, workerPath, path.join(uiPath, 'index.html'), iconPath]) {
+    if (!fs.existsSync(requiredPath)) {
+      throw new Error(`Packaged StudentHero file is missing: ${requiredPath}`);
+    }
+  }
+
+  ensureDir(INSTALL_ROOT);
+  ensureDir(path.join(INSTALL_ROOT, 'logs'));
+  const workerPort = await findOpenPort(DEFAULT_WORKER_PORT, DEFAULT_WORKER_PORT + 10);
+  activeWorkerPort = workerPort;
+  const uiPort = await findOpenPort(DEFAULT_LOCAL_PORT, DEFAULT_LOCAL_PORT + 10);
+  const workerEnv = {
+    ELMS_API_PORT: String(workerPort),
+    STUDENTHERO_DATA_ROOT: getAppDataRoot(),
+  };
+
+  logLine(`Starting packaged worker from ${workerPath}`);
+  startBackgroundCommand(nodeExecutable, [workerPath], packagedRoot, workerEnv);
+  await waitForWorkerHealth(`http://127.0.0.1:${workerPort}/health`);
+
+  packagedStaticServer = await startStaticServer(uiPath, uiPort);
+  await waitForLocalServer(`http://127.0.0.1:${uiPort}/`);
+
+  appWindow = new BrowserWindow({
+    title: APP_NAME,
+    width: 1280,
+    height: 840,
+    minWidth: 1120,
+    minHeight: 760,
+    backgroundColor: '#0b1020',
+    autoHideMenuBar: true,
+    icon: iconPath,
+    show: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  appWindow.setMenuBarVisibility(false);
+  appWindow.setTitle(APP_NAME);
+  appWindow.loadURL(`http://127.0.0.1:${uiPort}/?workerPort=${workerPort}`);
+  appWindow.on('closed', () => {
+    appWindow = null;
+    if (packagedStaticServer) {
+      packagedStaticServer.close();
+      packagedStaticServer = null;
+    }
+    killAppProcesses();
+    app.quit();
+  });
+  logLine(`Packaged StudentHero is running with worker at http://127.0.0.1:${workerPort}/health`);
+  logLine(`Packaged StudentHero dashboard is serving at http://127.0.0.1:${uiPort}/`);
 }
 
 async function bootstrap() {
@@ -633,11 +893,24 @@ app.on('ready', () => {
     app.quit();
     return;
   }
+  if (app.isPackaged) {
+    startPackagedApp().catch((error) => {
+      const message = error && error.message ? error.message : String(error);
+      logLine(`Packaged app startup failed: ${message}`);
+      dialog.showErrorBox(APP_NAME, `StudentHero could not start:\n\n${message}`);
+      app.quit();
+    });
+    return;
+  }
   createInstallerWindow();
   bootstrap();
 });
 
 app.on('before-quit', () => {
+  if (packagedStaticServer) {
+    packagedStaticServer.close();
+    packagedStaticServer = null;
+  }
   killAppProcesses();
 });
 

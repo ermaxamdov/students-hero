@@ -25,6 +25,7 @@ interface AppHeaderProps {
   onSync: () => void
   onAddMeeting: () => void
   onOpenSettings: () => void
+  onSleepMode: () => void
 }
 
 export function AppHeader({
@@ -34,6 +35,7 @@ export function AppHeader({
   onSync,
   onAddMeeting,
   onOpenSettings,
+  onSleepMode,
 }: AppHeaderProps) {
   const status = WORKER_LABEL[workerState]
 
@@ -79,6 +81,9 @@ export function AppHeader({
         </Button>
         <Button variant="primary" icon="plus" onClick={onAddMeeting}>
           Add meeting
+        </Button>
+        <Button variant="secondary" onClick={onSleepMode}>
+          Sleep Mode
         </Button>
         <Button variant="ghost" size="md" onClick={onOpenSettings} aria-label="Settings">
           <Icon name="gear" className="h-4 w-4" />

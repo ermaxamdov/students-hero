@@ -57,6 +57,7 @@ export function loadStore(syncTime = '05:00'): SyncStore {
           ? candidate.screenshotDelayMinutes as number
           : 10,
       schedules: Array.isArray(candidate.schedules) ? candidate.schedules : [],
+      accountId: typeof candidate.accountId === 'string' ? candidate.accountId : undefined,
       lastSync:
         candidate.lastSync && typeof candidate.lastSync === 'object'
           ? candidate.lastSync

@@ -46,7 +46,6 @@ export function ElmsPanel({
   onDismissPreview,
   needsFirstTimeLogin,
 }: ElmsPanelProps) {
-  const [showLogin, setShowLogin] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
 
@@ -56,23 +55,22 @@ export function ElmsPanel({
     event.preventDefault()
     if (username.trim() === '' || password === '') return
     onLogin(username.trim(), password)
-    setPassword('')
   }
 
-  const loginVisible = showLogin || (!session && status.kind === 'error')
+  const loginError = !session && status.kind === 'error'
 
   return (
     <div>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-sm text-[13px] text-ink-dim">
-          Import your timetable directly from the browser. Useful when the local worker is not
-          running.
-        </p>
-        {session && (
-          <div className="text-right">
-            {session.username && (
-              <p className="text-[12.5px] font-medium text-ink">{session.username}</p>
-            )}
+      <p className="text-[13px] text-ink-dim">
+        Enter your ELMS account first, connect, then import your timetable. The local worker is
+        not required for this manual import.
+      </p>
+
+      <section className="mt-4 rounded-xl border border-line bg-surface-2/40 p-3.5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.09em] text-muted">ELMS account</p>
+        {session ? (
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <p className="text-[13px] text-ink">Connected as {session.username || 'your account'}</p>
             <button
               type="button"
               onClick={onLogout}
@@ -81,33 +79,51 @@ export function ElmsPanel({
               Sign out
             </button>
           </div>
+        ) : (
+          <form onSubmit={handleLoginSubmit} className="mt-3 space-y-3">
+            <Field label="ELMS login" htmlFor="elms-username">
+              <input
+                id="elms-username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                disabled={busy}
+                className={fieldClass}
+                placeholder="student ID or email"
+              />
+            </Field>
+            <Field label="ELMS parol" htmlFor="elms-password">
+              <input
+                id="elms-password"
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={busy}
+                className={fieldClass}
+              />
+            </Field>
+            <Button type="submit" variant="primary" className="w-full" loading={busy} disabled={busy}>
+              {busy ? status.text : "ELMS'ga ulanish"}
+            </Button>
+            <p className="text-[11.5px] leading-relaxed text-muted">
+              Sent only to <span className="font-mono">api-elms.tuit.uz</span>. The password is
+              never stored or logged; only the token ELMS returns is kept in this browser.
+            </p>
+          </form>
         )}
-      </div>
+      </section>
 
-      <Button
-        variant="primary"
-        icon="refresh"
-        className="mt-3.5 w-full"
-        size="lg"
-        loading={busy}
-        onClick={session ? onImport : () => setShowLogin(true)}
-      >
-        {busy ? status.text : "ELMS'dan avtomatik olish"}
-      </Button>
-
-      {status.kind === 'error' && (
+      {loginError && (
         <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-[#4a2b2b] bg-[#241a1a]/60 px-3 py-2.5">
-          <span className="mt-0.5 text-danger">
-            <Icon name="warning" className="h-4 w-4" />
-          </span>
+          <span className="mt-0.5 text-danger"><Icon name="warning" className="h-4 w-4" /></span>
           <p className="text-[13px] text-ink-dim">{status.text}</p>
         </div>
       )}
       {status.kind === 'success' && (
         <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-[#234436] bg-[#16241e]/60 px-3 py-2.5">
-          <span className="mt-0.5 text-ok">
-            <Icon name="check" className="h-4 w-4" />
-          </span>
+          <span className="mt-0.5 text-ok"><Icon name="check" className="h-4 w-4" /></span>
           <p className="text-[13px] text-ink-dim">{status.text}</p>
         </div>
       )}
@@ -131,38 +147,21 @@ export function ElmsPanel({
         </div>
       )}
 
-      {!session && loginVisible && (
-        <form onSubmit={handleLoginSubmit} className="mt-4 space-y-3">
-          <Field label="ELMS login" htmlFor="elms-username">
-            <input
-              id="elms-username"
-              type="text"
-              autoComplete="username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-              className={fieldClass}
-              placeholder="student ID or email"
-            />
-          </Field>
-          <Field label="ELMS parol" htmlFor="elms-password">
-            <input
-              id="elms-password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              className={fieldClass}
-            />
-          </Field>
-          <Button type="submit" variant="primary" className="w-full" loading={busy}>
-            ELMS'ga ulanish
-          </Button>
-          <p className="text-[11.5px] leading-relaxed text-muted">
-            Sent only to <span className="font-mono">api-elms.tuit.uz</span>. The password is not
-            stored &mdash; only the token ELMS returns is kept in this browser.
-          </p>
-        </form>
-      )}
+      <section className="mt-4 rounded-xl border border-line bg-surface-2/40 p-3.5">
+        <p className="text-[11px] font-semibold uppercase tracking-[0.09em] text-muted">Timetable import</p>
+        <p className="mt-1.5 text-[13px] text-ink-dim">Fetch the current timetable, review the lessons and add them to your schedule.</p>
+        <Button
+          variant="primary"
+          icon="refresh"
+          className="mt-3 w-full"
+          size="lg"
+          loading={busy}
+          disabled={!session || busy}
+          onClick={onImport}
+        >
+          {busy ? status.text : "ELMS'dan avtomatik olish"}
+        </Button>
+      </section>
 
       <label className="mt-4 flex cursor-pointer items-center gap-2.5 text-[12.5px] text-ink-dim">
         <input

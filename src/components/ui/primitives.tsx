@@ -199,16 +199,23 @@ export function Modal({
 }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Escape closes; focus moves into the dialog for keyboard users.
+  // Escape closes. Keep this listener fresh when the callback changes, but do
+  // not refocus the dialog on every parent render: the dashboard clock ticks
+  // every second, and stealing focus would interrupt text entry in a modal.
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
-    panelRef.current?.focus()
     return () => document.removeEventListener('keydown', onKey)
   }, [open, onClose])
+
+  // Focus only when the dialog opens, not when unrelated state updates cause
+  // the parent to render again.
+  useEffect(() => {
+    if (open) panelRef.current?.focus()
+  }, [open])
 
   if (!open) return null
 

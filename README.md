@@ -53,10 +53,10 @@ StudentHero captures screenshots from real Zoom sessions for local review. Those
 ### Install on Windows
 
 1. Download **StudentHero-Setup.exe** from the [GitHub Releases page](https://github.com/sardor1411/students-hero/releases).
-2. Run the installer and allow it to download the app files and dependencies on first launch.
+2. Run the installer. It installs the packaged Electron app and its private Node.js runtime; no developer tools are required.
 3. Configure worker credentials locally to enable scheduled ELMS sync; see [Windows setup](SETUP.md). The dashboard also supports a separate manual ELMS import.
 
-The installer is for Windows x64 and needs internet access for initial setup and release checks. It maintains a portable Node.js 20.19 runtime for the local app. On first run and at most every six hours, the bootstrapper checks the latest published GitHub Release and downloads that release's tagged source archive when an update is available. The downloadable ZIP asset is the packaged Electron bootstrapper.
+The installer and ZIP are for Windows x64. Both include the Electron app, built dashboard and worker, and a portable Node.js 20.19 runtime. StudentHero starts its worker locally and does not download project source or run the installer again at app startup. ELMS sync requires internet access.
 
 ### Run from source
 
@@ -100,7 +100,7 @@ Published releases are built on Windows by [the release workflow](.github/workfl
 
 - `StudentHero-Setup.exe` — the Windows installer
 - `StudentHero-Windows-x64.zip` — the unpacked x64 Electron application
-- `SHA256SUMS.txt` — SHA-256 hashes for both downloads
+- `checksums.txt` — SHA-256 hashes for both downloads
 
 To build the same artifacts locally on Windows:
 
@@ -109,7 +109,7 @@ npm ci
 npm run package:release
 ```
 
-The files are written to `release/`, which is Git-ignored. Do not commit installers, archives, screenshots captured by the app, or build output.
+The files are written to `release/artifacts/` by default, which is Git-ignored. Set `STUDENTHERO_RELEASE_DIR` to choose a different output directory. Do not commit installers, archives, screenshots captured by the app, or build output.
 
 ## Troubleshooting
 

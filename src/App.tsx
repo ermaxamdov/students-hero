@@ -36,12 +36,14 @@ import type { Schedule, ScheduleFormValues } from './types/schedule'
 import { elmsLogin, importFromElms } from './utils/elmsClient'
 import { lessonsToSchedules, lessonsToWeeklySchedules, mergeSchedules } from './utils/elmsImport'
 import { clearElmsSession, loadElmsSession, saveElmsSession } from './utils/elmsStorage'
+import { accountIdForUsername } from './utils/account'
 import { findDueSchedules, getNextOccurrence, openMeeting } from './utils/scheduler'
 import {
   fetchWorkerHealth,
   fetchLaunchDiagnostics,
   fetchLatestScreenshot,
   fetchSyncState,
+  clearAllUserData,
   pushSchedules,
   setAutoSync,
   setWakeOffset,
@@ -59,6 +61,7 @@ import {
   loadSchedules,
   markPopupNoticeSeen,
   saveSchedules,
+  clearLocalAppStorage,
 } from './utils/storage'
 
 /** How often the clock ticks. 1s keeps the countdown smooth. */
@@ -67,9 +70,10 @@ const TICK_MS = 1000
 /** Stable id source for stacked toasts. */
 let toastSeq = 0
 
-function formValuesToSchedule(values: ScheduleFormValues, base?: Schedule): Schedule {
+function formValuesToSchedule(values: ScheduleFormValues, base?: Schedule, accountId?: string): Schedule {
   return {
     id: base?.id ?? createId(),
+    accountId: accountId ?? base?.accountId,
     name: values.name,
     url: values.url,
     time: values.time,
@@ -91,7 +95,10 @@ function formValuesToSchedule(values: ScheduleFormValues, base?: Schedule): Sche
 }
 
 export default function App() {
-  const [schedules, setSchedules] = useState<Schedule[]>(() => loadSchedules())
+  const [initialElmsSession] = useState<ElmsSession | null>(() => loadElmsSession())
+  const [schedules, setSchedules] = useState<Schedule[]>(() =>
+    initialElmsSession ? loadSchedules() : [],
+  )
   const [now, setNow] = useState<Date>(() => new Date())
   const [editingId, setEditingId] = useState<string | null>(null)
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null)
@@ -104,9 +111,13 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [syncModalOpen, setSyncModalOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
+  const [hibernateConfirmOpen, setHibernateConfirmOpen] = useState(false)
+  const [hibernateBusy, setHibernateBusy] = useState(false)
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false)
+  const [logoutBusy, setLogoutBusy] = useState(false)
 
   /* ELMS integration state */
-  const [elmsSession, setElmsSession] = useState<ElmsSession | null>(() => loadElmsSession())
+  const [elmsSession, setElmsSession] = useState<ElmsSession | null>(() => initialElmsSession)
   const [elmsStatus, setElmsStatus] = useState<ElmsStatus>({ kind: 'idle' })
   const [elmsPreview, setElmsPreview] = useState<ElmsImportResult | null>(null)
   const [elmsFirstTimeLogin, setElmsFirstTimeLogin] = useState(false)
@@ -134,6 +145,9 @@ export default function App() {
    */
   const schedulesRef = useRef<Schedule[]>(schedules)
   const workerStateRefreshRef = useRef(false)
+  const accountGenerationRef = useRef(0)
+  const logoutInProgressRef = useRef(false)
+  const elmsAbortRef = useRef<AbortController | null>(null)
 
   /* -------------------------------------------------------------- */
   /* Toasts                                                          */
@@ -161,11 +175,22 @@ export default function App() {
     saveSchedules(schedules)
   }, [schedules])
 
+  useEffect(() => {
+    if (initialElmsSession) return
+    // A logged-out app must not hydrate legacy/global schedule keys from a
+    // previous account. Anonymous/manual data is intentionally not reusable
+    // across account transitions.
+    clearLocalAppStorage()
+    schedulesRef.current = []
+    firedRef.current.clear()
+  }, [initialElmsSession])
+
   /* -------------------------------------------------------------- */
   /* The trigger: check every due schedule and open it               */
   /* -------------------------------------------------------------- */
 
   const checkSchedules = useCallback((current: Date) => {
+    if (logoutInProgressRef.current) return
     const due = findDueSchedules(schedulesRef.current, current)
     if (due.length === 0) return
 
@@ -227,7 +252,8 @@ export default function App() {
   /* -------------------------------------------------------------- */
 
   const handleAdd = useCallback((values: ScheduleFormValues) => {
-    setSchedules((current) => [...current, formValuesToSchedule(values)])
+    const accountId = accountIdForUsername(elmsSession?.username)
+    setSchedules((current) => [...current, formValuesToSchedule(values, undefined, accountId ?? undefined)])
     setAddOpen(false)
     pushToast('success', 'Schedule saved.')
     // One-time informational note, shown only for the very first schedule.
@@ -235,17 +261,18 @@ export default function App() {
       markPopupNoticeSeen()
       setShowPopupNotice(true)
     }
-  }, [pushToast])
+  }, [elmsSession?.username, pushToast])
 
   const handleSaveEdit = useCallback((id: string, values: ScheduleFormValues) => {
+    const accountId = accountIdForUsername(elmsSession?.username)
     setSchedules((current) =>
       current.map((schedule) =>
-        schedule.id === id ? formValuesToSchedule(values, schedule) : schedule,
+        schedule.id === id ? formValuesToSchedule(values, schedule, accountId ?? undefined) : schedule,
       ),
     )
     setEditingId(null)
     pushToast('success', 'Schedule updated.')
-  }, [pushToast])
+  }, [elmsSession?.username, pushToast])
 
   const handleToggleEnabled = useCallback((id: string) => {
     setSchedules((current) =>
@@ -325,6 +352,21 @@ export default function App() {
     }
   }, [pushToast])
 
+  const handleHibernate = useCallback(async () => {
+    if (!window.electronAPI?.hibernate) {
+      pushToast('warning', 'Hibernate is available in the packaged Windows app.')
+      setHibernateConfirmOpen(false)
+      return
+    }
+    setHibernateBusy(true)
+    try {
+      await window.electronAPI.hibernate()
+    } catch (error) {
+      setHibernateBusy(false)
+      pushToast('error', error instanceof Error ? error.message : 'Windows Hibernate could not be started.')
+    }
+  }, [pushToast])
+
   const handleConfirmDelete = useCallback(() => {
     if (!pendingDeleteId) return
     setSchedules((current) => current.filter((schedule) => schedule.id !== pendingDeleteId))
@@ -353,6 +395,7 @@ export default function App() {
    * worker and keep local manual entries as they are.
    */
   const applyWorkerState = useCallback((state: SyncStateResponse) => {
+    if (logoutInProgressRef.current) return
     setSyncState(state)
     setWorkerOffline(false)
 
@@ -385,9 +428,10 @@ export default function App() {
     let cancelled = false
 
     const pollHealth = async () => {
+      const generation = accountGenerationRef.current
       try {
         await fetchWorkerHealth()
-        if (cancelled) return
+        if (cancelled || generation !== accountGenerationRef.current || logoutInProgressRef.current) return
         setWorkerOffline(false)
         setWorkerError(false)
       } catch (error) {
@@ -403,20 +447,26 @@ export default function App() {
     }
 
     const pollState = async () => {
+      const generation = accountGenerationRef.current
       try {
         const state = await fetchSyncState()
-        if (!cancelled) applyWorkerState(state)
+        if (!cancelled && generation === accountGenerationRef.current && !logoutInProgressRef.current) {
+          applyWorkerState(state)
+        }
       } catch {
         // /health is authoritative for process status; state loading can retry next poll.
       }
     }
 
     const pollLaunchDiagnostics = async () => {
+      const generation = accountGenerationRef.current
       try {
         const diagnostics = await fetchLaunchDiagnostics()
-        if (!cancelled) setZoomTaskDiagnostics(diagnostics)
+        if (!cancelled && generation === accountGenerationRef.current && !logoutInProgressRef.current) {
+          setZoomTaskDiagnostics(diagnostics)
+        }
       } catch {
-        if (!cancelled) {
+        if (!cancelled && generation === accountGenerationRef.current && !logoutInProgressRef.current) {
           setZoomTaskDiagnostics({
             queryStatus: 'error',
             error: 'Windows task diagnostics could not be loaded.',
@@ -439,11 +489,16 @@ export default function App() {
     }
 
     const pollLatestScreenshot = async () => {
+      const generation = accountGenerationRef.current
       try {
         const result = await fetchLatestScreenshot()
-        if (!cancelled) setLatestScreenshot(result?.latest ?? null)
+        if (!cancelled && generation === accountGenerationRef.current && !logoutInProgressRef.current) {
+          setLatestScreenshot(result?.latest ?? null)
+        }
       } catch {
-        if (!cancelled) setLatestScreenshot(null)
+        if (!cancelled && generation === accountGenerationRef.current && !logoutInProgressRef.current) {
+          setLatestScreenshot(null)
+        }
       }
     }
 
@@ -474,13 +529,15 @@ export default function App() {
       workerStateRefreshRef.current = false
       return
     }
+    const generation = accountGenerationRef.current
     const id = window.setTimeout(() => {
-      void pushSchedules(schedules).catch(() => {
+      if (logoutInProgressRef.current || generation !== accountGenerationRef.current) return
+      void pushSchedules(schedules, accountIdForUsername(elmsSession?.username)).catch(() => {
         // Non-critical: the next successful push will carry the same data.
       })
     }, 1500)
     return () => window.clearTimeout(id)
-  }, [schedules, workerOffline])
+  }, [elmsSession?.username, schedules, workerOffline])
 
   const handleSyncNow = useCallback(async () => {
     setSyncBusy(true)
@@ -552,14 +609,21 @@ export default function App() {
 
   /** Fetch the timetable with an existing session and show a preview. */
   const runImport = useCallback(
-    async (session: ElmsSession) => {
+    async (session: ElmsSession, generation: number, signal: AbortSignal) => {
+      if (generation !== accountGenerationRef.current || logoutInProgressRef.current) return
       setElmsStatus({ kind: 'loading', text: 'ELMS jadvali yuklanmoqda...' })
       setElmsPreview(null)
       try {
         const { result, semesterId, session: effective } = await importFromElms(
           session,
-          persistSession,
+          (renewed) => {
+            if (generation === accountGenerationRef.current && !logoutInProgressRef.current) {
+              persistSession(renewed)
+            }
+          },
+          signal,
         )
+        if (generation !== accountGenerationRef.current || logoutInProgressRef.current) return
         // Cache the semester so later imports skip the profile round-trip.
         // Base this on `effective`, not `session`: the token may have been
         // refreshed during the import and must not be rolled back.
@@ -567,6 +631,7 @@ export default function App() {
         setElmsPreview(result)
         setElmsStatus({ kind: 'idle' })
       } catch (error) {
+        if (generation !== accountGenerationRef.current || logoutInProgressRef.current) return
         if (error instanceof ElmsAuthError) {
           // Session is dead - drop it so the login form comes back.
           clearElmsSession()
@@ -585,20 +650,36 @@ export default function App() {
 
   const handleElmsImport = useCallback(() => {
     if (!elmsSession) return
-    void runImport(elmsSession)
+    const generation = accountGenerationRef.current
+    const controller = new AbortController()
+    elmsAbortRef.current?.abort()
+    elmsAbortRef.current = controller
+    void runImport(elmsSession, generation, controller.signal)
   }, [elmsSession, runImport])
 
   const handleElmsLogin = useCallback(
     (username: string, password: string) => {
+      const generation = accountGenerationRef.current + 1
+      accountGenerationRef.current = generation
+      logoutInProgressRef.current = false
+      elmsAbortRef.current?.abort()
+      const controller = new AbortController()
+      elmsAbortRef.current = controller
+      clearLocalAppStorage()
+      schedulesRef.current = []
+      firedRef.current.clear()
+      setSchedules([])
       setElmsFirstTimeLogin(false)
       setElmsStatus({ kind: 'loading', text: 'ELMS\u2019ga ulanmoqda...' })
       void (async () => {
-        const result = await elmsLogin(username, password)
+        const result = await elmsLogin(username, password, controller.signal)
+        if (generation !== accountGenerationRef.current || logoutInProgressRef.current) return
         switch (result.kind) {
           case 'ok':
-            persistSession(result.session)
-            // Straight into the import: one click is the whole point.
-            await runImport(result.session)
+            // Treat authentication as complete only after the token can load
+            // the profile and active semester. This prevents a 200 login with
+            // an unusable response from being shown as connected.
+            await runImport(result.session, generation, controller.signal)
             break
           case 'firstTimeLogin':
             setElmsFirstTimeLogin(true)
@@ -611,15 +692,68 @@ export default function App() {
         }
       })()
     },
-    [persistSession, runImport],
+    [runImport],
   )
 
-  const handleElmsLogout = useCallback(() => {
-    clearElmsSession()
-    setElmsSession(null)
-    setElmsPreview(null)
-    setElmsStatus({ kind: 'idle' })
+  const requestElmsLogout = useCallback(() => {
+    setLogoutConfirmOpen(true)
   }, [])
+
+  const handleElmsLogout = useCallback(async () => {
+    setLogoutBusy(true)
+    logoutInProgressRef.current = true
+    accountGenerationRef.current += 1
+    elmsAbortRef.current?.abort()
+    try {
+      if (window.electronAPI?.clearAllUserData) {
+        await window.electronAPI.clearAllUserData()
+      } else {
+        await clearAllUserData()
+      }
+      const clearedState = await fetchSyncState()
+      const clearedTasks = await fetchLaunchDiagnostics()
+      if (
+        clearedState.schedules.length !== 0 ||
+        clearedState.credentialsConfigured ||
+        clearedState.autoSyncEnabled ||
+        clearedTasks.queryStatus !== 'ok' ||
+        (clearedTasks.launchTaskCount ?? 0) !== 0 ||
+        (clearedTasks.wakeTaskCount ?? 0) !== 0 ||
+        (clearedTasks.screenshotTaskCount ?? 0) !== 0
+      ) {
+        throw new Error('StudentHero cleanup verification failed; the account was not fully cleared.')
+      }
+      clearElmsSession()
+      clearLocalAppStorage()
+      setElmsSession(null)
+      setElmsPreview(null)
+      setElmsStatus({ kind: 'idle' })
+      setElmsFirstTimeLogin(false)
+      setSchedules([])
+      schedulesRef.current = []
+      firedRef.current.clear()
+      setZoomTaskDiagnostics(null)
+      setLatestScreenshot(null)
+      setSyncError(null)
+      setToasts([])
+      applyWorkerState({
+        autoSyncEnabled: false,
+        syncTime: '05:00',
+        wakeOffsetMinutes: 5,
+        screenshotDelayMinutes: 10,
+        lastSync: { state: 'never' },
+        nextSync: null,
+        schedules: [],
+        credentialsConfigured: false,
+      })
+      setLogoutConfirmOpen(false)
+      pushToast('success', 'StudentHero data, ELMS credentials, and Windows tasks were cleared.')
+    } catch (error) {
+      logoutInProgressRef.current = false
+      pushToast('error', error instanceof Error ? error.message : 'StudentHero data could not be cleared.')
+    }
+    setLogoutBusy(false)
+  }, [applyWorkerState, pushToast])
 
   /** Write the previewed lessons into the schedule list. */
   const handleConfirmElmsImport = useCallback(() => {
@@ -627,8 +761,10 @@ export default function App() {
     const imported = groupWeekly
       ? lessonsToWeeklySchedules(elmsPreview.withLinks)
       : lessonsToSchedules(elmsPreview.withLinks)
+    const accountId = accountIdForUsername(elmsSession?.username)
+    const ownedImported = imported.map((schedule) => ({ ...schedule, accountId: accountId ?? undefined }))
 
-    if (imported.length === 0) {
+    if (ownedImported.length === 0) {
       setElmsStatus({
         kind: 'error',
         text: 'Qo\u2018shish uchun kelgusi darslar topilmadi (barchasi o\u2018tib ketgan).',
@@ -639,7 +775,7 @@ export default function App() {
 
     // Merge against the current list up front: doing this inside the state
     // updater would make the summary unreliable (updaters may run twice).
-    const { merged, added, updated } = mergeSchedules(schedulesRef.current, imported)
+    const { merged, added, updated } = mergeSchedules(schedulesRef.current, ownedImported)
     setSchedules(merged)
     setElmsPreview(null)
     setElmsStatus({
@@ -650,7 +786,7 @@ export default function App() {
       markPopupNoticeSeen()
       setShowPopupNotice(true)
     }
-  }, [elmsPreview, groupWeekly])
+  }, [elmsPreview, elmsSession?.username, groupWeekly])
 
   /* -------------------------------------------------------------- */
   /* Derived view data                                               */
@@ -710,6 +846,7 @@ export default function App() {
           onSync={() => void handleSyncNow()}
           onAddMeeting={() => setAddOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onSleepMode={() => setHibernateConfirmOpen(true)}
         />
 
         {/* One-time popup guidance, kept compact. */}
@@ -747,6 +884,8 @@ export default function App() {
             onSyncNow={() => void handleSyncNow()}
             onToggleAutoSync={(enabled) => void handleToggleAutoSync(enabled)}
             onShowDetails={() => setSyncModalOpen(true)}
+            onConnect={() => setImportOpen(true)}
+            accountConnected={elmsSession !== null}
           />
         </div>
 
@@ -893,7 +1032,7 @@ export default function App() {
           onGroupWeeklyChange={setGroupWeekly}
           onImport={handleElmsImport}
           onLogin={handleElmsLogin}
-          onLogout={handleElmsLogout}
+          onLogout={requestElmsLogout}
           onConfirmPreview={handleConfirmElmsImport}
           onDismissPreview={() => setElmsPreview(null)}
           needsFirstTimeLogin={elmsFirstTimeLogin}
@@ -922,8 +1061,59 @@ export default function App() {
         onWakeOffsetChange={(minutes: number) => void handleWakeOffsetChange(minutes)}
         onScreenshotDelayChange={(minutes: number) => void handleScreenshotDelayChange(minutes)}
         taskDiagnostics={zoomTaskDiagnostics}
-        onElmsLogout={handleElmsLogout}
+        onElmsLogout={requestElmsLogout}
+        onElmsConnect={() => setImportOpen(true)}
       />
+
+      <Modal
+        open={logoutConfirmOpen}
+        onClose={() => { if (!logoutBusy) setLogoutConfirmOpen(false) }}
+        title="Clear StudentHero data?"
+        description="This permanently removes local account data and Windows automation tasks."
+        footer={(
+          <>
+            <Button variant="secondary" disabled={logoutBusy} onClick={() => setLogoutConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" loading={logoutBusy} onClick={() => void handleElmsLogout()}>
+              Clear data &amp; logout
+            </Button>
+          </>
+        )}
+      >
+        <p className="text-[13px] leading-relaxed text-ink-dim">
+          This removes ELMS credentials and session tokens, imported and manual schedules, screenshots,
+          worker state, and all StudentHero-owned Windows Task Scheduler entries. You will need to sign
+          in again to use ELMS.
+        </p>
+      </Modal>
+
+      <Modal
+        open={hibernateConfirmOpen}
+        onClose={() => { if (!hibernateBusy) setHibernateConfirmOpen(false) }}
+        title="Sleep Mode"
+        description="StudentHero will put this PC into Windows Hibernate."
+        footer={(
+          <>
+            <Button variant="secondary" disabled={hibernateBusy} onClick={() => setHibernateConfirmOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" loading={hibernateBusy} onClick={() => void handleHibernate()}>
+              Hibernate
+            </Button>
+          </>
+        )}
+      >
+        <p className="text-[13px] leading-relaxed text-ink-dim">
+          The next class wake task will remain owned by Windows Task Scheduler. StudentHero will
+          request real Hibernate, not normal Sleep.
+        </p>
+        {zoomTaskDiagnostics?.nextWake && nextMeeting && (
+          <p className="mt-3 rounded-xl border border-line bg-surface-2/40 px-3 py-2 text-[12.5px] text-ink-dim">
+            Next wake task: <span className="text-ink">{new Date(zoomTaskDiagnostics.nextWake.at).toLocaleString()}</span>
+          </p>
+        )}
+      </Modal>
 
       <Modal
         open={pendingDeleteId !== null}

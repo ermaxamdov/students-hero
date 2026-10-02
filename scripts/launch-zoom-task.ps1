@@ -8,13 +8,19 @@ param(
     [int]$BrowserGraceSeconds = 0,
     [int]$RetryGraceSeconds = 180,
     [int]$MethodWaitSeconds = 5,
-    [int]$RetryIntervalSeconds = 10
+    [int]$RetryIntervalSeconds = 10,
+    [string]$DataRoot
 )
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $PSScriptRoot
-$dataDir = Join-Path $root 'data'
+$dataRoot = if ($DataRoot) { $DataRoot } else { $root }
+$resetMarker = Join-Path $dataRoot 'logout.lock'
+if (Test-Path -LiteralPath $resetMarker) {
+    exit 0
+}
+$dataDir = Join-Path $dataRoot 'data'
 if (-not (Test-Path $dataDir)) { New-Item -ItemType Directory -Path $dataDir -Force | Out-Null }
 
 $logPath = Join-Path $dataDir 'zoom-launch.log'

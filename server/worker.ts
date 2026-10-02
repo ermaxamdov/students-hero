@@ -15,13 +15,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import type { SyncStateResponse } from '../src/types/sync'
-import { DATA_DIR, hasCredentials, loadConfig, projectRoot } from './config'
+import { CREDENTIALS_DAT, DATA_DIR, DATA_ROOT, hasCredentials, loadConfig, projectRoot, RESET_MARKER } from './config'
 import { isSyncDue, nextSyncAt } from './schedule'
 import { loadStore, saveStore } from './store'
 import { log, runSync } from './sync'
-import { getZoomTaskDiagnostics, reconcileZoomLaunchTasks } from './zoomTasks'
+import { getZoomTaskDiagnostics, reconcileZoomLaunchTasks, removeAllManagedTasks, waitForTaskOperations } from './zoomTasks'
 
-const config = loadConfig()
+let config = loadConfig()
 
 function originIsAllowed(origin: string | undefined): boolean {
   if (!origin) return false
@@ -34,7 +34,9 @@ function originIsAllowed(origin: string | undefined): boolean {
   }
 }
 
-let syncing = false
+let cleanupInProgress = false
+let activeSyncController: AbortController | null = null
+let activeSyncPromise: Promise<{ ok: boolean; partial?: boolean; message?: string }> | null = null
 
 function corsHeaders(origin: string | undefined): Record<string, string> {
   return {
@@ -54,15 +56,18 @@ function sendJson(res: ServerResponse, origin: string | undefined, code: number,
 /** Current state, shaped for the UI. Never includes tokens or credentials. */
 function buildState(): SyncStateResponse {
   const store = loadStore(config.syncTime)
-  const next = store.autoSyncEnabled ? nextSyncAt(store.syncTime) : null
+  const visibleStore = config.accountId && store.accountId !== config.accountId
+    ? { ...store, schedules: [], tokens: undefined, lastSync: { state: 'never' as const } }
+    : store
+  const next = visibleStore.autoSyncEnabled ? nextSyncAt(visibleStore.syncTime) : null
   return {
-    autoSyncEnabled: store.autoSyncEnabled,
-    syncTime: store.syncTime,
-    wakeOffsetMinutes: store.wakeOffsetMinutes,
-    screenshotDelayMinutes: store.screenshotDelayMinutes,
-    lastSync: store.lastSync,
+    autoSyncEnabled: visibleStore.autoSyncEnabled,
+    syncTime: visibleStore.syncTime,
+    wakeOffsetMinutes: visibleStore.wakeOffsetMinutes,
+    screenshotDelayMinutes: visibleStore.screenshotDelayMinutes,
+    lastSync: visibleStore.lastSync,
     nextSync: next ? next.toISOString() : null,
-    schedules: store.schedules,
+    schedules: visibleStore.schedules,
     credentialsConfigured: hasCredentials(config),
   }
 }
@@ -80,14 +85,21 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 /** Guarded sync so overlapping requests cannot run two syncs at once. */
 async function syncOnce(): Promise<{ ok: boolean; partial?: boolean; message?: string }> {
-  if (syncing) return { ok: false, message: 'A sync is already running.' }
-  syncing = true
-  try {
-    const { status } = await runSync(config)
-    return { ok: status.state === 'success', partial: status.partial, message: status.message }
-  } finally {
-    syncing = false
-  }
+  if (cleanupInProgress) return { ok: false, message: 'Account cleanup is in progress.' }
+  if (activeSyncPromise) return activeSyncPromise
+  const controller = new AbortController()
+  activeSyncController = controller
+  const promise = (async () => {
+    try {
+      const { status } = await runSync(config, controller.signal)
+      return { ok: status.state === 'success', partial: status.partial, message: status.message }
+    } finally {
+      activeSyncController = null
+      activeSyncPromise = null
+    }
+  })()
+  activeSyncPromise = promise
+  return promise
 }
 
 const server = createServer((req, res) => {
@@ -112,7 +124,59 @@ const server = createServer((req, res) => {
         return
       }
 
+      /**
+       * Destructive account reset. The main process invokes this through the
+       * packaged-app IPC handler so renderer storage and DPAPI cleanup happen
+       * in the same user-visible operation.
+       */
+      if (url.pathname === '/api/clear-all-user-data' && req.method === 'POST') {
+        if (cleanupInProgress) {
+          sendJson(res, origin, 409, { ok: false, message: 'Account cleanup is already in progress.' })
+          return
+        }
+        cleanupInProgress = true
+        const fs = await import('node:fs')
+        try {
+          fs.mkdirSync(DATA_ROOT(), { recursive: true })
+          fs.writeFileSync(RESET_MARKER(), `${Date.now()}`, 'utf8')
+          activeSyncController?.abort()
+          if (activeSyncPromise) await activeSyncPromise.catch(() => undefined)
+          await waitForTaskOperations()
+
+          const taskResult = await removeAllManagedTasks()
+          if (taskResult.failed > 0) {
+            sendJson(res, origin, 500, { ok: false, message: 'Some StudentHero Windows tasks could not be removed.' })
+            return
+          }
+
+          fs.rmSync(DATA_DIR(), { recursive: true, force: true })
+          fs.rmSync(`${DATA_ROOT()}\\screen`, { recursive: true, force: true })
+          fs.rmSync(CREDENTIALS_DAT(), { force: true })
+          if (DATA_ROOT() !== projectRoot()) fs.rmSync(`${DATA_ROOT()}\\.env.local`, { force: true })
+          saveStore(loadStore(config.syncTime))
+          config = { ...config, username: '', password: '', accountId: null, credentialSource: 'none' }
+          sendJson(res, origin, 200, { ok: true, removedTasks: taskResult.removed, state: buildState() })
+          return
+        } catch {
+          if (!res.writableEnded) {
+            sendJson(res, origin, 500, { ok: false, message: 'StudentHero account cleanup could not be completed.' })
+          }
+        } finally {
+          fs.rmSync(RESET_MARKER(), { force: true })
+          cleanupInProgress = false
+        }
+      }
+
+      if (cleanupInProgress && req.method === 'POST') {
+        sendJson(res, origin, 409, { ok: false, message: 'Account cleanup is in progress.' })
+        return
+      }
+
       if (url.pathname === '/api/sync' && req.method === 'POST') {
+        if (cleanupInProgress) {
+          sendJson(res, origin, 409, { ok: false, message: 'Account cleanup is in progress.' })
+          return
+        }
         const result = await syncOnce()
         sendJson(res, origin, result.ok ? 200 : 500, { ...result, state: buildState() })
         return
@@ -130,7 +194,7 @@ const server = createServer((req, res) => {
           if (!hasCredentials(config)) {
             sendJson(res, origin, 400, {
               ok: false,
-              message: 'ELMS credentials are not configured in .env.local.',
+              message: 'ELMS account is not connected. Configure local app credentials before enabling background sync.',
               state: buildState(),
             })
             return
@@ -147,19 +211,33 @@ const server = createServer((req, res) => {
 
       /** Frontend pushes back user edits (enable/disable, delete, manual adds). */
       if (url.pathname === '/api/schedules' && req.method === 'POST') {
-        const body = (await readBody(req)) as { schedules?: unknown }
+        if (cleanupInProgress) {
+          sendJson(res, origin, 409, { ok: false, message: 'Account cleanup is in progress.' })
+          return
+        }
+        const body = (await readBody(req)) as { schedules?: unknown; accountId?: unknown }
         if (!Array.isArray(body.schedules)) {
           sendJson(res, origin, 400, { ok: false, message: 'schedules[] required' })
           return
         }
         const store = loadStore(config.syncTime)
         const nextSchedules = Array.isArray(body.schedules) ? (body.schedules as any[]) : []
-        if (JSON.stringify(store.schedules) === JSON.stringify(nextSchedules)) {
+        const incomingAccountId = typeof body.accountId === 'string' ? body.accountId : config.accountId
+        if (store.accountId && incomingAccountId && store.accountId !== incomingAccountId) {
+          sendJson(res, origin, 409, { ok: false, message: 'The local worker belongs to another account. Log out before switching accounts.' })
+          return
+        }
+        const schedulesUnchanged = JSON.stringify(store.schedules) === JSON.stringify(nextSchedules)
+        if (schedulesUnchanged && (store.accountId === incomingAccountId || !incomingAccountId)) {
           sendJson(res, origin, 200, { ok: true, unchanged: true })
           return
         }
-        const nextStore = { ...store, schedules: nextSchedules }
+        const nextStore = { ...store, accountId: incomingAccountId ?? store.accountId, schedules: nextSchedules }
         saveStore(nextStore)
+        if (schedulesUnchanged) {
+          sendJson(res, origin, 200, { ok: true, unchanged: true })
+          return
+        }
         const taskReport = await reconcileZoomLaunchTasks(
           nextSchedules as any,
           new Date(),
@@ -340,7 +418,7 @@ const server = createServer((req, res) => {
           sendJson(res, origin, 400, { ok: false, message: 'Invalid screenshot path.' })
           return
         }
-        const root = resolve(projectRoot(), 'screen')
+        const root = resolve(DATA_ROOT(), 'screen')
         const candidate = resolve(root, normalized.replace(/^screen\//, ''))
         if (!candidate.startsWith(root)) {
           sendJson(res, origin, 400, { ok: false, message: 'Invalid screenshot path.' })
@@ -394,6 +472,8 @@ const server = createServer((req, res) => {
           new Date().toISOString(),
           '-GraceMinutes',
           '10',
+          '-DataRoot',
+          DATA_ROOT(),
         ]
 
         try {

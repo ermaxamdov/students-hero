@@ -23,6 +23,8 @@ export type ScheduleSource = 'manual' | 'elms'
 
 export interface Schedule {
   id: string
+  /** Local ownership marker. Manual schedules are assigned at creation time. */
+  accountId?: string
   /** Optional human label, e.g. "English Lesson". */
   name: string
   /** The meeting link that gets opened, e.g. a Zoom join URL. */

@@ -271,11 +271,12 @@ export function messageOf(body: unknown, fallback: string): string {
 }
 
 /** Log in with username + password. The password is never logged. */
-export async function login(username: string, password: string): Promise<ElmsTokens> {
+export async function login(username: string, password: string, signal?: AbortSignal): Promise<ElmsTokens> {
   const response = await fetch(`${ELMS_API_URL}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username, password }),
+    signal,
   })
   const body = await readJson(response)
 
@@ -302,11 +303,12 @@ export async function login(username: string, password: string): Promise<ElmsTok
 }
 
 /** Swap the refresh token for a fresh pair. Returns null when it fails. */
-export async function refresh(tokens: ElmsTokens): Promise<ElmsTokens | null> {
+export async function refresh(tokens: ElmsTokens, signal?: AbortSignal): Promise<ElmsTokens | null> {
   if (!tokens.refreshToken) return null
   try {
     const response = await fetch(`${ELMS_API_URL}/auth/refresh`, {
       headers: { Authorization: `Bearer ${tokens.refreshToken}` },
+      signal,
     })
     if (!response.ok) return null
     const body = await readJson(response)
@@ -332,14 +334,15 @@ export async function refresh(tokens: ElmsTokens): Promise<ElmsTokens | null> {
 async function authorizedGet(
   path: string,
   ctx: AuthContext,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const attempt = (token: string) =>
-    fetch(`${ELMS_API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` } })
+    fetch(`${ELMS_API_BASE}${path}`, { headers: { Authorization: `Bearer ${token}` }, signal })
 
   let response = await attempt(ctx.tokens.accessToken)
 
   if (response.status === 401) {
-    const refreshed = await refresh(ctx.tokens)
+    const refreshed = await refresh(ctx.tokens, signal)
     if (refreshed) {
       ctx.setTokens(refreshed)
       response = await attempt(refreshed.accessToken)
@@ -348,7 +351,7 @@ async function authorizedGet(
 
   if (response.status === 401) {
     // Refresh path exhausted - fall back to a full credential login.
-    const relogged = await ctx.relogin()
+    const relogged = await ctx.relogin(signal)
     ctx.setTokens(relogged)
     response = await attempt(relogged.accessToken)
   }
@@ -367,7 +370,7 @@ export interface AuthContext {
   tokens: ElmsTokens
   setTokens: (tokens: ElmsTokens) => void
   /** Full username+password login, used when refreshing is not enough. */
-  relogin: () => Promise<ElmsTokens>
+  relogin: (signal?: AbortSignal) => Promise<ElmsTokens>
 }
 
 /**
@@ -376,8 +379,8 @@ export interface AuthContext {
  * IMPORTANT: it lives at `result[0].activeStudy.semester_id`, NOT
  * `result[0].semester_id` - verified against a real account.
  */
-export async function fetchSemesterId(ctx: AuthContext): Promise<number | null> {
-  const body = await authorizedGet(`/profile/show?language=${LANGUAGE}`, ctx)
+export async function fetchSemesterId(ctx: AuthContext, signal?: AbortSignal): Promise<number | null> {
+  const body = await authorizedGet(`/profile/show?language=${LANGUAGE}`, ctx, signal)
   const result = get(body, 'result')
   const profile = Array.isArray(result) ? result[0] : result
 
@@ -391,8 +394,9 @@ export async function fetchSemesterId(ctx: AuthContext): Promise<number | null> 
 export async function fetchTimetable(
   ctx: AuthContext,
   semesterId: number,
+  signal?: AbortSignal,
 ): Promise<ParsedTimetable> {
-  const body = await authorizedGet(`/student-time-tables/${semesterId}?language=${LANGUAGE}`, ctx)
+  const body = await authorizedGet(`/student-time-tables/${semesterId}?language=${LANGUAGE}`, ctx, signal)
   return parseTimetable(body)
 }
 
@@ -403,10 +407,11 @@ export async function fetchTimetable(
 export const ELMS_ID_PREFIX = 'elms:'
 
 /** Weekly lesson -> the schedule shape the scheduler already understands. */
-export function lessonToSchedule(lesson: ElmsWeeklyLesson, now: Date): Schedule {
+export function lessonToSchedule(lesson: ElmsWeeklyLesson, now: Date, accountId?: string): Schedule {
   const url = lesson.meetingUrl ?? lesson.zoomUrl ?? ''
   return {
     id: `${ELMS_ID_PREFIX}${lesson.sourceLessonId}`,
+    accountId,
     name: lesson.teacher ? `${lesson.subject} - ${lesson.teacher}` : lesson.subject,
     url,
     time: lesson.startTime,
@@ -444,13 +449,17 @@ export function reconcile(
   existing: Schedule[],
   lessons: ElmsWeeklyLesson[],
   now: Date = new Date(),
+  accountId?: string,
 ): ReconcileResult {
   const counts: SyncCounts = { ...EMPTY_COUNTS }
   const changes: string[] = []
 
   // Manual schedules pass through completely untouched.
-  const manual = existing.filter((schedule) => schedule.source !== 'elms')
-  const elmsExisting = existing.filter((schedule) => schedule.source === 'elms')
+  const owned = accountId
+    ? existing.filter((schedule) => !schedule.accountId || schedule.accountId === accountId)
+    : existing
+  const manual = owned.filter((schedule) => schedule.source !== 'elms')
+  const elmsExisting = owned.filter((schedule) => schedule.source === 'elms')
   const byLessonId = new Map<string, Schedule>()
   for (const schedule of elmsExisting) {
     const key = schedule.sourceLessonId ?? schedule.id.replace(ELMS_ID_PREFIX, '')
@@ -461,7 +470,7 @@ export function reconcile(
   const handled = new Set<string>()
 
   for (const lesson of lessons) {
-    const fresh = lessonToSchedule(lesson, now)
+    const fresh = lessonToSchedule(lesson, now, accountId)
     const previous = byLessonId.get(lesson.sourceLessonId)
     handled.add(lesson.sourceLessonId)
 
@@ -480,7 +489,7 @@ export function reconcile(
     if (!urlChanged && !timeChanged && !daysChanged && !wasStale) {
       // Nothing changed: keep the existing record exactly as-is so the
       // user's enabled flag and lastRun survive.
-      result.push({ ...previous, syncedAt: now.toISOString() })
+      result.push({ ...previous, accountId: accountId ?? previous.accountId, syncedAt: now.toISOString() })
       counts.unchanged += 1
       continue
     }

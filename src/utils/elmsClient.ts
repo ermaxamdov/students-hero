@@ -24,6 +24,20 @@ export const ELMS_LOGIN_PAGE = 'https://elms.tuit.uz/user/login'
 /** ELMS serves its own UI in Uzbek by default; keep responses consistent. */
 const LANGUAGE = 'oz'
 
+export class ElmsProfileError extends Error {
+  constructor(message = 'ELMS login succeeded, but the profile could not be loaded.') {
+    super(message)
+    this.name = 'ElmsProfileError'
+  }
+}
+
+export class ElmsTimetableError extends Error {
+  constructor(message = 'ELMS profile loaded, but the timetable could not be fetched.') {
+    super(message)
+    this.name = 'ElmsTimetableError'
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* Low-level helpers                                                   */
 /* ------------------------------------------------------------------ */
@@ -221,7 +235,12 @@ export function parseTimetable(payload: unknown): ElmsImportResult {
     if (!Array.isArray(subjects)) return
 
     // The date can live on the day wrapper or on each subject.
-    const dayDateRaw = firstOf(day, DATE_KEYS)
+    const weekNumber = Number(firstOf(day, ['week_number'])) || dayIndex + 1
+    const target = new Date()
+    const today = target.getDay() || 7
+    const delta = ((weekNumber - today + 7) % 7) || 7
+    target.setDate(target.getDate() + delta)
+    const dayDateRaw = firstOf(day, DATE_KEYS) || `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(target.getDate())}`
 
     subjects.forEach((subject, subjectIndex) => {
       totalLessons += 1
@@ -313,13 +332,14 @@ function messageOf(body: unknown, fallback: string): string {
  * Credentials go straight to api-elms.tuit.uz over HTTPS and are never stored
  * or forwarded anywhere else.
  */
-export async function elmsLogin(username: string, password: string): Promise<ElmsLoginResult> {
+export async function elmsLogin(username: string, password: string, signal?: AbortSignal): Promise<ElmsLoginResult> {
   let response: Response
   try {
     response = await fetch(`${ELMS_API_URL}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
+      signal,
     })
   } catch {
     return {
@@ -361,11 +381,12 @@ export async function elmsLogin(username: string, password: string): Promise<Elm
 }
 
 /** Exchange the refresh token for a fresh access token. */
-export async function elmsRefresh(session: ElmsSession): Promise<ElmsSession | null> {
+export async function elmsRefresh(session: ElmsSession, signal?: AbortSignal): Promise<ElmsSession | null> {
   if (!session.refreshToken) return null
   try {
     const response = await fetch(`${ELMS_API_URL}/auth/refresh`, {
       headers: { Authorization: `Bearer ${session.refreshToken}` },
+      signal,
     })
     if (!response.ok) return null
     const body = await readJson(response)
@@ -391,10 +412,12 @@ async function authorizedGet(
   path: string,
   session: ElmsSession,
   onSessionRenewed: (session: ElmsSession) => void,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const request = (token: string) =>
     fetch(`${ELMS_API_BASE}${path}`, {
       headers: { Authorization: `Bearer ${token}` },
+      signal,
     })
 
   let response: Response
@@ -405,7 +428,7 @@ async function authorizedGet(
   }
 
   if (response.status === 401) {
-    const renewed = await elmsRefresh(session)
+    const renewed = await elmsRefresh(session, signal)
     if (!renewed) throw new ElmsAuthError('ELMS sessiyasi tugagan. Qaytadan kiring.')
     onSessionRenewed(renewed)
     response = await request(renewed.accessToken)
@@ -425,12 +448,20 @@ async function authorizedGet(
 export async function fetchSemesterId(
   session: ElmsSession,
   onSessionRenewed: (session: ElmsSession) => void,
+  signal?: AbortSignal,
 ): Promise<number | null> {
-  const body = await authorizedGet(`/profile/show?language=${LANGUAGE}`, session, onSessionRenewed)
+  let body: unknown
+  try {
+    body = await authorizedGet(`/profile/show?language=${LANGUAGE}`, session, onSessionRenewed, signal)
+  } catch (error) {
+    if (error instanceof ElmsAuthError) throw error
+    throw new ElmsProfileError()
+  }
   const result = get(body, 'result')
   const profile = Array.isArray(result) ? result[0] : result
-  const semesterId = Number(get(profile, 'semester_id'))
-  return Number.isFinite(semesterId) && semesterId > 0 ? semesterId : null
+  const semesterId = Number(get(profile, 'activeStudy.semester_id'))
+  if (!Number.isFinite(semesterId) || semesterId <= 0) throw new ElmsProfileError()
+  return semesterId
 }
 
 /** Fetch and normalize the timetable for a semester. */
@@ -438,13 +469,20 @@ export async function fetchTimetable(
   session: ElmsSession,
   semesterId: number,
   onSessionRenewed: (session: ElmsSession) => void,
+  signal?: AbortSignal,
 ): Promise<ElmsImportResult> {
-  const body = await authorizedGet(
-    `/student-time-tables/${semesterId}?language=${LANGUAGE}`,
-    session,
-    onSessionRenewed,
-  )
-  return parseTimetable(body)
+  try {
+    const body = await authorizedGet(
+      `/student-time-tables/${semesterId}?language=${LANGUAGE}`,
+      session,
+      onSessionRenewed,
+      signal,
+    )
+    return parseTimetable(body)
+  } catch (error) {
+    if (error instanceof ElmsAuthError) throw error
+    throw new ElmsTimetableError()
+  }
 }
 
 /**
@@ -458,6 +496,7 @@ export async function fetchTimetable(
 export async function importFromElms(
   session: ElmsSession,
   onSessionRenewed: (session: ElmsSession) => void,
+  signal?: AbortSignal,
 ): Promise<{ result: ElmsImportResult; semesterId: number; session: ElmsSession }> {
   let current = session
   const track = (renewed: ElmsSession) => {
@@ -465,11 +504,11 @@ export async function importFromElms(
     onSessionRenewed(renewed)
   }
 
-  const semesterId = current.semesterId ?? (await fetchSemesterId(current, track))
+  const semesterId = current.semesterId ?? (await fetchSemesterId(current, track, signal))
   if (!semesterId) {
     throw new Error('ELMS profilidan semestr aniqlanmadi.')
   }
   // Re-read `current`: fetchSemesterId may have rotated the token.
-  const result = await fetchTimetable(current, semesterId, track)
+  const result = await fetchTimetable(current, semesterId, track, signal)
   return { result, semesterId, session: current }
 }

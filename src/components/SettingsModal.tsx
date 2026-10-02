@@ -5,8 +5,9 @@
  * worker details, ELMS session, scheduling info, browser limitations.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ElmsSession } from '../types/elms'
+import type { AppDataEntry } from '../types/electron'
 import type { SyncStateResponse, ZoomTaskDiagnostics } from '../types/sync'
 import { formatStamp } from '../utils/presentation'
 import { WORKER_BASE_URL } from '../utils/syncApi'
@@ -35,6 +36,7 @@ interface SettingsModalProps {
   onWakeOffsetChange: (minutes: number) => void
   onScreenshotDelayChange: (minutes: number) => void
   onElmsLogout: () => void
+  onElmsConnect: () => void
   taskDiagnostics: ZoomTaskDiagnostics | null
 }
 
@@ -83,9 +85,20 @@ export function SettingsModal({
   onWakeOffsetChange,
   onScreenshotDelayChange,
   onElmsLogout,
+  onElmsConnect,
   taskDiagnostics,
 }: SettingsModalProps) {
   const [tab, setTab] = useState<Tab>('general')
+  const [appData, setAppData] = useState<Record<string, AppDataEntry> | null>(null)
+
+  useEffect(() => {
+    if (!open || !window.electronAPI?.getAppDataInfo) return
+    void window.electronAPI.getAppDataInfo().then(setAppData).catch(() => setAppData(null))
+  }, [open])
+
+  const openPath = (key: string) => {
+    if (window.electronAPI?.openAppDataPath) void window.electronAPI.openAppDataPath(key)
+  }
 
   return (
     <Modal open={open} onClose={onClose} title="Settings" size="lg">
@@ -129,6 +142,25 @@ export function SettingsModal({
               <Row label="From ELMS" value={elmsCount} />
               <Row label="Manual" value={scheduleCount - elmsCount} />
             </Group>
+
+            <Group title="App data">
+              {appData ? (
+                <>
+                  <Row label="App data" value={appData.appData?.path ?? '\u2014'} mono />
+                  {appData.logs?.exists && <Row label="Logs" value={appData.logs.path} mono />}
+                  {appData.screenshots?.exists && <Row label="Screenshots" value={appData.screenshots.path} mono />}
+                  {appData.localState?.exists && <Row label="Local database/state" value={appData.localState.path} mono />}
+                  {appData.credentials?.exists && <Row label="Credential storage" value={appData.credentials.path} mono />}
+                  <div className="flex flex-wrap gap-2 py-3">
+                    <Button size="sm" variant="secondary" onClick={() => openPath('appData')}>Open app data folder</Button>
+                    <Button size="sm" variant="ghost" onClick={() => openPath('logs')}>Open logs folder</Button>
+                    <Button size="sm" variant="ghost" onClick={() => openPath('screenshots')}>Open screenshots folder</Button>
+                  </div>
+                </>
+              ) : (
+                <p className="py-3 text-[12.5px] text-muted">Available in the packaged Windows app.</p>
+              )}
+            </Group>
           </>
         )}
 
@@ -164,23 +196,36 @@ export function SettingsModal({
               )}
             </Group>
 
-            {elmsSession && (
-              <Group title="Browser session">
-                <Row label="Signed in as" value={elmsSession.username ?? '\u2014'} />
+            <Group title="ELMS account">
+              {elmsSession ? (
+                <>
+                  <Row
+                    label="Status"
+                    value={<span className="inline-flex items-center gap-1.5"><StatusDot tone="ok" />Connected</span>}
+                  />
+                  {elmsSession.username && <Row label="Account" value={elmsSession.username} />}
+                  <div className="flex items-center justify-between gap-4 py-2">
+                    <span className="text-[13px] text-ink-dim">ELMS session</span>
+                    <Button size="sm" variant="secondary" onClick={onElmsLogout}>
+                      Logout
+                    </Button>
+                  </div>
+                </>
+              ) : (
                 <div className="flex items-center justify-between gap-4 py-2">
-                  <span className="text-[13px] text-ink-dim">Manual import session</span>
-                  <Button size="sm" variant="secondary" onClick={onElmsLogout}>
-                    Sign out
+                  <span className="text-[13px] text-ink-dim">ELMS account not connected</span>
+                  <Button size="sm" variant="secondary" onClick={onElmsConnect}>
+                    Connect ELMS
                   </Button>
                 </div>
-              </Group>
-            )}
+              )}
+            </Group>
 
             <p className="text-[12.5px] leading-relaxed text-muted">
-              Credentials for the background sync live in{' '}
-              <span className="font-mono text-ink-dim">.env.local</span> (or encrypted via Windows
-              DPAPI) and are read only by the local worker. They are never included in the browser
-              bundle.
+              In the packaged app, background credentials are read from the per-user app-data
+              directory and the password can be protected with Windows DPAPI. The worker reads
+              them locally; they are never included in the browser bundle. Source-checkout
+              development may still use <span className="font-mono text-ink-dim">.env.local</span>.
             </p>
           </>
         )}

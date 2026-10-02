@@ -8,6 +8,8 @@ For a source checkout, copy `.env.example` to `.env.local` and set `ELMS_USERNAM
 
 On Windows, you can instead use `npm run elms:save-credentials` to save the password using the current Windows account's DPAPI protection. This protects the file at rest, but does not protect it from software running as that same account.
 
+For the packaged desktop app, create `%LOCALAPPDATA%\StudentsHero\.env.local` with `ELMS_USERNAME` and `ELMS_PASSWORD`. The app's bundled worker reads credentials from this per-user folder; do not put credentials in the repository or share the file.
+
 ## Background tasks
 
 Run `npm run worker` to start the local API and its catch-up timer. The worker syncs ELMS when auto-sync is enabled and reconciles upcoming wake, Zoom launch, and screenshot occurrences with Windows Task Scheduler.
@@ -32,7 +34,7 @@ Task Scheduler requests wake timers and starts the launch process for the signed
 
 - In a source checkout, sync state and logs live under `data/`.
 - Captured screenshots live under `screen/<date>/` and may contain meeting content.
-- The installed app keeps mutable data and logs under `%LOCALAPPDATA%\StudentsHero`.
+- The installed app keeps mutable data, credentials, screenshots, and logs under `%LOCALAPPDATA%\StudentsHero`.
 
 Keep these directories private and out of commits. For troubleshooting, inspect the dashboard's task diagnostics and local worker logs before reinstalling tasks.
 
@@ -47,4 +49,4 @@ npm run build
 npm run package:release
 ```
 
-The release files are generated under `release/`; they are not source files and must not be committed.
+The release files are generated under `release/artifacts/` by default; they are not source files and must not be committed. Set `STUDENTHERO_RELEASE_DIR` to use another output folder.

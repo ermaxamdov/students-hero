@@ -114,9 +114,8 @@ export function AutoSyncPanel({
 
       {!state?.credentialsConfigured && (
         <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-          ELMS credentials are not configured. Add them to{' '}
-          <span className="font-mono">.env.local</span> (see{' '}
-          <span className="font-mono">.env.example</span>).
+          ELMS account not connected. In the packaged app, credentials are managed in the local
+          app-data storage; source-checkout development may use <span className="font-mono">.env.local</span>.
         </p>
       )}
 
